@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 export default function App() {
-  const GOOGLE_SCRIPT_URL = import.meta.env.VITE_GOOGLE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyjyMRiQVq4VJDHiJQT1t0kFL0pWyNmieJesQt9TqRD-rw6QFBEKjrr9KHh662ABw3s/exec';
+  const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyjyMRiQVq4VJDHiJQTlt0kFL0pWyNmieJesQt9TqRD-rw6QFBEKjrr9KHh662ABw3s/exec';
 
   const [activeTab, setActiveTab] = useState('registro'); // 'registro' ou 'acervo'
   const [items, setItems] = useState([]);
   const [sortConfig, setSortConfig] = useState({ key: 'Data/Hora', direction: 'desc' });
   const [loadingList, setLoadingList] = useState(false);
+  const [fetchError, setFetchError] = useState('');
 
   const initialFormState = {
     pacote: '', idItem: '', centro: '', departamento: '',
@@ -40,7 +41,11 @@ export default function App() {
   const getSigla = (nome) => {
     if(!nome) return 'XXX';
     const ignore = ['de', 'da', 'do', 'das', 'dos', 'e', 'departamento', 'centro', '-'];
-    let cleanName = nome.toLowerCase().replace(/departamento de /g, '').replace(/centro de /g, '');
+    let cleanName = nome.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, "") // remove acentos para criar sigla limpa
+      .replace(/departamento de /g, '')
+      .replace(/centro de /g, '');
+    
     return cleanName.split(' ')
       .filter(w => !ignore.includes(w) && w.length > 0)
       .map(w => w[0])
@@ -78,43 +83,47 @@ export default function App() {
   };
 
   const parseOCR = (text) => {
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
     let novoCentro = '', novoDept = '', novoCurso = '', novoOrientador = '', mesAno = '';
     let estudantes = [];
     let lendoEstudantes = false;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const lower = line.toLowerCase();
+      // Normalização robusta: minúsculas e sem acentos para evitar erros do OCR
+      const normalized = line.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
 
-      if (lower.includes('centro de') && !novoCentro) novoCentro = line;
-      if (lower.includes('departamento de') && !novoDept) novoDept = line;
+      if (normalized.includes('centro de') && !novoCentro) novoCentro = line;
+      if (normalized.includes('departamento de') && !novoDept) novoDept = line;
       
-      if ((lower.includes('disciplina:') || lower.includes('curso de')) && !novoCurso) {
-        novoCurso = line.replace(/(disciplina:|curso de)\s*/i, '').trim();
+      if ((normalized.includes('disciplina') || normalized.includes('curso')) && !novoCurso) {
+        novoCurso = line.replace(/^(.*?)(disciplina|curso(\s*de)?)\s*:?/i, '').trim();
       }
       
-      if ((lower.includes('prof') || lower.includes('orientador')) && !novoOrientador) {
-        novoOrientador = line.replace(/(prof(essor)?(a)?(.)?|orientador(a)?)\s*:?/i, '').trim();
+      if ((normalized.includes('prof') || normalized.includes('orientador')) && !novoOrientador) {
+        novoOrientador = line.replace(/^(.*?)(prof(essor)?(a)?(.)?|orientador(a)?)\s*:?/i, '').trim();
       }
 
-      const matchDate = lower.match(/(janeiro|fevereiro|março|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(20\d{2}|19\d{2})/);
+      const matchDate = normalized.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(20\d{2}|19\d{2})/);
       if (matchDate && !mesAno) {
-        const monthMap = {janeiro:'01', fevereiro:'02', 'março':'03', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
+        const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
         mesAno = `${matchDate[2]}-${monthMap[matchDate[1]]}`;
       }
       
-      if (lower.includes('acadêmico') || lower.includes('aluno') || lower.includes('discente') || lower.includes('estudante')) {
+      // Gatilho para começar a ler os nomes dos estudantes
+      if (normalized.includes('academico') || normalized.includes('aluno') || normalized.includes('discente') || normalized.includes('estudante')) {
          lendoEstudantes = true;
-         let nome = line.replace(/(acadêmicos|acadêmica|acadêmico|alunos|aluno|discentes|discente|estudantes|estudante)(s)?(a)?(s)?\s*:?/i, '').trim();
-         if(nome) estudantes.push(nome);
+         // Captura o nome se estiver na mesma linha (ex: "Acadêmicos: Adriana...")
+         let nome = line.replace(/^(.*?)(academicos|academica|academico|alunos|aluno|discentes|discente|estudantes|estudante)(s)?(a)?(s)?\s*:?/i, '').trim();
+         if(nome && nome.length > 3) estudantes.push(nome);
          continue;
       }
 
+      // Se o gatilho foi ativado, as próximas linhas são os estudantes 2 e 3
       if (lendoEstudantes) {
-          if (lower.includes('florianópolis') || matchDate || lower.includes('prof') || lower.includes('orientador')) {
-              lendoEstudantes = false;
-          } else if (line.length > 5) {
+          if (normalized.includes('florianopolis') || matchDate || normalized.includes('prof') || normalized.includes('orientador') || normalized.includes('disciplina')) {
+              lendoEstudantes = false; // Parar de ler estudantes se achar o rodapé ou outra sessão
+          } else if (line.length > 3 && estudantes.length < 3) {
               estudantes.push(line);
           }
       }
@@ -168,13 +177,16 @@ export default function App() {
 
   const confirmAndSubmit = async () => {
     setShowConfirm(false);
-    if (!GOOGLE_SCRIPT_URL) return alert("Erro: URL do Google Script ausente.");
+    if (!GOOGLE_SCRIPT_URL) {
+       setFetchError("URL do Google Script ausente. Configure a variável de ambiente VITE_GOOGLE_SCRIPT_URL.");
+       return;
+    }
 
     setStatus('loading');
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
-        mode: 'no-cors',
+        mode: 'no-cors', // Permite envio contornando bloqueios CORS do Google Apps Script
         headers: { 
           'Content-Type': 'text/plain;charset=utf-8' 
         },
@@ -195,24 +207,33 @@ export default function App() {
   const fetchItems = async () => {
     if (!GOOGLE_SCRIPT_URL) return;
     setLoadingList(true);
+    setFetchError('');
     try {
       const response = await fetch(GOOGLE_SCRIPT_URL);
-      const data = await response.json();
-      setItems(data);
+      const text = await response.text();
+      
+      try {
+        const data = JSON.parse(text);
+        if (Array.isArray(data)) {
+           setItems(data);
+        } else {
+           setFetchError("A resposta não é uma lista válida. Erro na formatação dos dados.");
+        }
+      } catch(e) {
+        setFetchError("Erro: A planilha não retornou dados em JSON. Verifique se publicou como 'Nova Versão' no Apps Script.");
+        console.error("Resposta recebida:", text);
+      }
     } catch (err) {
-      console.error("Erro ao buscar dados:", err);
+      console.error("Erro de rede:", err);
+      setFetchError("Falha de comunicação com o servidor. O link está correto?");
     } finally {
       setLoadingList(false);
     }
   };
 
   useEffect(() => {
-    fetchItems();
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === 'acervo') {
-      fetchItems();
+    if(activeTab === 'acervo') {
+       fetchItems();
     }
   }, [activeTab]);
 
@@ -234,120 +255,144 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
-      <div className="w-full max-w-6xl bg-white border-[12px] border-black shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] flex flex-col">
+      <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] md:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
         {/* Cabeçalho e Abas */}
-        <div className="flex flex-col md:flex-row border-b-[12px] border-black">
-          <div className="bg-[#c2185b] flex-1 p-6 md:p-8 text-white border-b-[12px] md:border-b-0 md:border-r-[12px] border-black">
-            <h1 className="text-4xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
-            <p className="mt-1 text-pink-200 font-bold text-lg">Triagem de Relatórios de Estágio</p>
+        <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
+          <div className="bg-[#c2185b] flex-1 p-6 md:p-8 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
+            <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
+            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem de Relatórios de Estágio</p>
           </div>
-          <div className="flex flex-row md:flex-col bg-[#ffb300]">
+          <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
               onClick={() => setActiveTab('registro')}
-              className={`flex-1 px-8 py-4 font-black uppercase tracking-wider text-xl border-b-[12px] md:border-r-0 border-r-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 md:px-8 py-4 font-black uppercase tracking-wider text-sm md:text-xl border-b-[8px] md:border-b-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Registrar
             </button>
             <button 
               onClick={() => setActiveTab('acervo')}
-              className={`flex-1 px-8 py-4 font-black uppercase tracking-wider text-xl transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 md:px-8 py-4 font-black uppercase tracking-wider text-sm md:text-xl transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
-              Acervo
+              Ver Acervo
             </button>
           </div>
         </div>
 
         {/* Conteúdo Aba: Registro */}
         {activeTab === 'registro' && (
-          <div className="flex flex-col xl:flex-row">
+          <div className="p-6 md:p-10 flex flex-col gap-8 bg-white">
             
-            {/* Coluna do Formulário ou Resumo */}
-            <div className="flex-[2] p-6 md:p-8">
-              {showConfirm ? (
-                <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] animate-in fade-in zoom-in duration-300">
-                  <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-4 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
-                      <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
-                      <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
-                      <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
-                      <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Departamento:</strong> <br/>{formData.departamento || '-'}</div>
-                      <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Curso/Disciplina:</strong> <br/>{formData.curso || '-'}</div>
-                      <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(', ') || '-'}</div>
-                      <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
-                      <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
-                      <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
-                      {formData.observacoes && <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-black uppercase">Observações:</strong> <br/>{formData.observacoes}</div>}
+            {showConfirm ? (
+              <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] animate-in fade-in zoom-in duration-300">
+                <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-4 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
+                    <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Departamento:</strong> <br/>{formData.departamento || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.curso || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(', ') || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
+                    {formData.observacoes && <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-black uppercase">Observações:</strong> <br/>{formData.observacoes}</div>}
+                </div>
+                <div className="flex flex-col md:flex-row gap-4 mt-6">
+                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 active:translate-y-1 transition-transform shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Confirmar e Enviar</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-[#ffb300] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-yellow-300 active:translate-y-1 transition-transform shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar e Editar</button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Assistente de Câmera Discreto no Topo */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 p-4 border-[4px] border-black bg-gray-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl" role="img" aria-label="Camera">📷</span>
+                    <div className="flex flex-col">
+                      <span className="font-black text-sm md:text-base uppercase tracking-tight">Leitura Automática</span>
+                      <span className="text-xs md:text-sm font-bold text-gray-600">Fotografe a capa para extrair os dados.</span>
+                    </div>
                   </div>
-                  <div className="flex flex-col md:flex-row gap-4 mt-6">
-                     <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 active:translate-y-1 transition-transform">Confirmar e Enviar</button>
-                     <button onClick={() => setShowConfirm(false)} className="flex-1 bg-[#ffb300] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-yellow-300 active:translate-y-1 transition-transform">Voltar e Editar</button>
+                  
+                  <div className="flex-1 flex justify-end w-full sm:w-auto">
+                    <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
+                    <button 
+                      type="button"
+                      onClick={() => fileInputRef.current.click()} 
+                      disabled={ocrStatus === 'loading'}
+                      className="w-full sm:w-auto bg-[#00bcd4] text-black font-black uppercase tracking-wider text-sm md:text-base px-6 py-3 border-[4px] border-black hover:bg-cyan-300 active:translate-y-1 transition-transform disabled:opacity-50"
+                    >
+                      {ocrStatus === 'loading' ? 'Processando...' : 'Usar Câmera'}
+                    </button>
                   </div>
                 </div>
-              ) : (
-                <form onSubmit={handlePreSubmit} className="flex flex-col gap-6">
+
+                {ocrStatus === 'success' && <div className="p-3 bg-green-200 border-[4px] border-black font-black text-sm uppercase">✓ Dados extraídos com sucesso. Revise abaixo.</div>}
+                {ocrStatus === 'error' && <div className="p-3 bg-red-200 border-[4px] border-black font-black text-sm uppercase text-red-900">⚠ A foto ficou ilegível. Preencha manualmente.</div>}
+
+                {/* Formulário Principal */}
+                <form onSubmit={handlePreSubmit} className="flex flex-col gap-8">
                   
-                  {/* Linha 1: Identificadores */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide">Identificador do Pacote</label>
-                      <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#e0f7fa] uppercase" placeholder="Ex: PCT001" />
+                  {/* Bloco 1: Identificadores */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide">ID do Pacote (Prefixo/Nº)</label>
+                      <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: PCT001" />
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-[#c2185b]">ID do Item</label>
-                      <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase" placeholder="Ex: REL-LLV-001" />
-                    </div>
-                  </div>
-
-                  {/* Linha 2: Lotação */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-sm">Centro (Ex: CCE)</label>
-                      <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[6px] border-black p-3 focus:outline-none focus:bg-[#ffe082]" />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-sm">Departamento (Ex: LLV)</label>
-                      <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[6px] border-black p-3 focus:outline-none focus:bg-[#ffe082]" />
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID do Item / Relatório</label>
+                      <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: REL-LLV-001" />
                     </div>
                   </div>
 
-                  {/* Linha 3: Estudantes */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-sm">Estudante 1</label>
-                      <input required type="text" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[6px] border-black p-3 focus:outline-none focus:bg-[#e0f7fa]" />
+                  {/* Bloco 2: Lotação */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Centro (Ex: CCE)</label>
+                      <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-sm">Estudante 2 (Opcional)</label>
-                      <input type="text" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[6px] border-black p-3 focus:outline-none focus:bg-[#e0f7fa]" />
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Departamento (Ex: LLV)</label>
+                      <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide text-sm">Estudante 3 (Opcional)</label>
-                      <input type="text" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[6px] border-black p-3 focus:outline-none focus:bg-[#e0f7fa]" />
-                    </div>
-                  </div>
-
-                  {/* Linha 4: Orientador e Curso */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide">Nome do Orientador(a)</label>
-                      <input required type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg focus:outline-none focus:bg-[#e0f7fa]" />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide">Curso ou Disciplina</label>
-                      <input required type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg focus:outline-none focus:bg-[#e0f7fa]" />
+                    <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Disciplina</label>
+                      <input required type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
 
-                  {/* Linha 5: Detalhes IFES */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide">Mês e Ano</label>
-                      <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg focus:outline-none focus:bg-[#e0f7fa] bg-white uppercase font-bold" />
+                  {/* Bloco 3: Pessoas Envolvidas */}
+                  <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-[#c2185b]">Nome do Orientador(a)</label>
+                      <input required type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
-                    <div className="flex flex-col gap-1">
-                      <label className="font-bold text-black uppercase tracking-wide">Código SIGA IFES</label>
-                      <select required name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[6px] border-black p-3 text-lg focus:outline-none focus:bg-[#e0f7fa] font-bold cursor-pointer appearance-none bg-white">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
+                      <div className="flex flex-col gap-2">
+                        <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1</label>
+                        <input required type="text" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2 (Opcional)</label>
+                        <input type="text" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3 (Opcional)</label>
+                        <input type="text" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bloco 4: Metadados */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide">Mês e Ano</label>
+                      <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide">Código SIGA IFES</label>
+                      <select required name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white font-black cursor-pointer appearance-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                         <option value="" disabled>Selecione um código...</option>
                         <option value="125.31 - Provas. Exames. Trabalhos">125.31 - Provas. Exames. Trabalhos</option>
                         <option value="125.43 - Assentamentos individuais">125.43 - Assentamentos (Dossiê)</option>
@@ -356,65 +401,47 @@ export default function App() {
                         <option value="Outro (Especificar na observação)">Outro (Especificar na observação)</option>
                       </select>
                     </div>
+                    <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide">Observações (Caixa/Estante de Destino)</label>
+                      <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
                   </div>
 
-                  <div className="flex flex-col gap-1">
-                    <label className="font-bold text-black uppercase tracking-wide">Observações</label>
-                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[6px] border-black p-3 text-lg focus:outline-none focus:bg-[#e0f7fa] resize-none" />
-                  </div>
-
-                  <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[6px] border-black py-4 font-black text-2xl uppercase tracking-wider hover:bg-[#d81b60] active:translate-y-1 transition-all disabled:opacity-50">
+                  <button type="submit" disabled={status === 'loading'} className="mt-4 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] active:translate-y-1 transition-all disabled:opacity-50 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
                     Revisar e Salvar
                   </button>
-                  {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-3"><p className="text-black font-black text-center text-lg">✓ Salvo com sucesso!</p></div>}
+                  {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Documento Salvo no Acervo!</p></div>}
                 </form>
-              )}
-            </div>
-
-            {/* Coluna do OCR (Câmera) */}
-            <div className="flex-1 bg-[#00bcd4] border-t-[12px] xl:border-t-0 xl:border-l-[12px] border-black flex flex-col p-6 md:p-8">
-              <h2 className="text-2xl font-black text-black uppercase tracking-tight mb-4 border-b-[6px] border-black pb-2">Assistente de Capa</h2>
-              <p className="font-bold text-black mb-6 text-sm">Tire uma foto da capa do relatório. O sistema preencherá automaticamente os dados do formulário ao lado e irá gerar um identificador ID baseado na triagem prévia.</p>
-              
-              <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
-              
-              <button onClick={() => fileInputRef.current.click()} disabled={ocrStatus === 'loading' || showConfirm} className="bg-white text-black border-[6px] border-black py-4 font-black text-xl uppercase tracking-wider hover:bg-gray-100 flex items-center justify-center gap-3 active:translate-y-1 transition-transform mb-6 disabled:opacity-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                <span className="text-3xl" role="img" aria-label="Camera">📷</span> {ocrStatus === 'loading' ? 'Lendo...' : 'Usar Câmera'}
-              </button>
-
-              {ocrStatus === 'success' && (
-                <div className="bg-[#ffb300] border-[6px] border-black p-4 mt-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                  <p className="font-black text-black uppercase text-center text-lg">✓ Dados Preenchidos!</p>
-                  <p className="text-sm font-bold text-center mt-2">Revise os campos ao lado. Selecione o código SIGA e adicione observações se necessário.</p>
-                </div>
-              )}
-              {ocrStatus === 'error' && (
-                <div className="bg-[#c2185b] border-[6px] border-black p-4 mt-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                  <p className="font-black text-white uppercase text-center text-lg">⚠ Erro na leitura</p>
-                  <p className="text-sm font-bold text-white text-center mt-2">Não foi possível processar a imagem. Tente uma foto mais nítida.</p>
-                </div>
-              )}
-            </div>
+              </>
+            )}
           </div>
         )}
 
         {/* Conteúdo Aba: Acervo */}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
+            {fetchError && (
+              <div className="mb-6 bg-red-200 border-[4px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <p className="font-black text-red-900 uppercase">⚠ Problema ao ler a planilha:</p>
+                <p className="font-bold text-sm mt-1">{fetchError}</p>
+                <p className="font-bold text-xs mt-2 text-gray-700">Dica: No Google Apps Script, lembre-se de clicar em "Implantar" {'>'} "Gerenciar implantações" {'>'} Editar {'>'} Versão: "Nova Versão".</p>
+              </div>
+            )}
+            
             {loadingList ? (
               <div className="flex-1 flex items-center justify-center">
-                <p className="font-black text-2xl uppercase animate-pulse">Carregando Acervo...</p>
+                <p className="font-black text-2xl uppercase animate-pulse">Lendo Planilha...</p>
               </div>
             ) : (
-              <div className="overflow-x-auto border-[6px] border-black">
+              <div className="overflow-x-auto border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
                 <table className="w-full text-left border-collapse whitespace-nowrap">
                   <thead>
-                    <tr className="bg-[#ffb300] text-black">
-                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Orientador", "Mês/Ano", "Código IFES"].map((header) => (
+                    <tr className="bg-[#00bcd4] text-black">
+                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Orientador", "Mês/Ano"].map((header) => (
                         <th 
                           key={header} 
                           onClick={() => handleSort(header)}
-                          className="border-b-[6px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-[#ffe082] transition-colors"
+                          className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 transition-colors last:border-r-0"
                         >
                           <div className="flex items-center gap-2">
                             {header}
@@ -426,21 +453,20 @@ export default function App() {
                       ))}
                     </tr>
                   </thead>
-                  <tbody>
+                  <tbody className="bg-gray-50">
                     {sortedItems.length === 0 ? (
-                      <tr><td colSpan="9" className="p-6 text-center font-bold">Nenhum registro encontrado.</td></tr>
+                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">Acervo Vazio ou não encontrado.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-gray-100 transition-colors border-b-[3px] border-gray-300 last:border-b-0">
-                          <td className="p-4 font-mono text-sm">{item["Data/Hora"]}</td>
-                          <td className="p-4 font-bold">{item["ID Pacote"]}</td>
-                          <td className="p-4 font-bold text-[#c2185b]">{item["ID Item"]}</td>
-                          <td className="p-4">{item["Centro"]}</td>
-                          <td className="p-4">{item["Departamento"]}</td>
-                          <td className="p-4">{item["Estudante 1"]}</td>
-                          <td className="p-4">{item["Orientador"]}</td>
-                          <td className="p-4 font-bold">{item["Mês/Ano"]}</td>
-                          <td className="p-4 text-xs font-mono">{item["Código IFES"]}</td>
+                        <tr key={idx} className="hover:bg-yellow-100 transition-colors border-b-[4px] border-black last:border-b-0">
+                          <td className="p-4 font-mono text-xs border-r-[4px] border-black">{item["Data/Hora"]}</td>
+                          <td className="p-4 font-black border-r-[4px] border-black">{item["ID Pacote"]}</td>
+                          <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,25) + '...'}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Departamento"]?.substring(0,10) + '...'}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Estudante 1"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Orientador"]}</td>
+                          <td className="p-4 font-black bg-[#ffe082]">{item["Mês/Ano"]}</td>
                         </tr>
                       ))
                     )}
