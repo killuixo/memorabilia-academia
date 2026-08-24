@@ -1,10 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// URL direta do seu Google Script inserida para evitar erros de compilação no ambiente.
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyjyMRiQVq4VJDHiJQTlt0kFL0pWyNmieJesQt9TqRD-rw6QFBEKjrr9KHh662ABw3s/exec";
+// Acesso seguro à variável de ambiente para Vercel/Vite sem quebrar em ambientes de preview
+const getGoogleScriptUrl = () => {
+  try {
+    return import.meta.env.VITE_GOOGLE_SCRIPT_URL || "";
+  } catch (error) {
+    return ""; // Fallback silencioso
+  }
+};
+const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('registro'); // 'registro' ou 'acervo'
+  const [activeTab, setActiveTab] = useState('registro'); 
   const [items, setItems] = useState([]);
   const [sortConfig, setSortConfig] = useState({ key: 'Data/Hora', direction: 'desc' });
   const [loadingList, setLoadingList] = useState(false);
@@ -19,8 +26,7 @@ export default function App() {
   const [formData, setFormData] = useState(initialFormState);
   const [status, setStatus] = useState('idle');
   const [showConfirm, setShowConfirm] = useState(false);
-  
-  const [ocrStatus, setOcrStatus] = useState('idle'); // idle, loading, success, error
+  const [ocrStatus, setOcrStatus] = useState('idle');
   const fileInputRef = useRef(null);
 
   const fetchItems = async () => {
@@ -38,7 +44,7 @@ export default function App() {
            setFetchError("Erro: A resposta não é uma lista válida.");
         }
       } catch(e) {
-        setFetchError("Erro: A planilha não retornou JSON válido. Verifique o link ou a implantação.");
+        setFetchError("Erro: A planilha não retornou JSON válido.");
       }
     } catch (err) {
       setFetchError("Falha de comunicação com o servidor.");
@@ -56,39 +62,18 @@ export default function App() {
   }, [activeTab]);
 
   useEffect(() => {
-    if (items.length > 0) {
-      const lastItem = items[items.length - 1];
+    const lastItem = items[items.length - 1];
+    const autoPacote = formData.pacote || (lastItem ? lastItem["ID Pacote"] : '');
+    const deptToUse = formData.departamento || (lastItem ? lastItem["Departamento"] : '');
 
-      // 1. Sugere o pacote mais recente se o campo estiver vazio
-      let autoPacote = formData.pacote || (lastItem ? lastItem["ID Pacote"] : '');
-
-      // 2. Identifica o departamento e a sigla correta
-      const deptToUse = formData.departamento || (lastItem ? lastItem["Departamento"] : 'MEN');
-
-      const getSigla = (nome) => {
-        if(!nome) return 'XXX';
-        // Se for uma sigla (ex: LLV, MEN, CCE), não tenta quebrar em letras
-        if(nome.trim().length <= 5 && !nome.includes(' ')) return nome.trim().toUpperCase();
-
-        const ignore = ['de', 'da', 'do', 'das', 'dos', 'e', 'departamento', 'centro', 'curso', '-'];
-        let cleanName = nome.toLowerCase()
-          .normalize('NFD').replace(/[\u0300-\u036f]/g, "") 
-          .replace(/departamento de /g, '')
-          .replace(/centro de /g, '');
-        
-        return cleanName.split(' ')
-          .filter(w => !ignore.includes(w) && w.length > 0)
-          .map(w => w[0])
-          .join('')
-          .toUpperCase()
-          .substring(0, 3) || 'XXX';
-      };
-
-      const sigla = getSigla(deptToUse);
-      const prefix = `REL-${sigla}-`;
-      let maxItemNum = 0;
-      
-      // Procura o maior número com O MESMO prefixo exato (REL-LLV-)
+    // Usa exatamente o que está escrito no campo Departamento (ex: CFH, LLV, MEN)
+    const sigla = deptToUse.trim().toUpperCase();
+    const prefix = sigla ? `REL-${sigla}-` : `REL-`;
+    
+    let maxItemNum = 0;
+    
+    // Procura o maior número APENAS com o prefixo exato atual
+    if (sigla) {
       items.forEach(item => {
         const id = String(item["ID Item"] || '').toUpperCase();
         if (id.startsWith(prefix)) {
@@ -99,14 +84,26 @@ export default function App() {
           }
         }
       });
-      
-      const autoIdItem = `${prefix}${String(maxItemNum + 1).padStart(3, '0')}`;
-
-      // Atualiza os campos apenas se mudou (para evitar loop infinito)
-      if (autoPacote !== formData.pacote || autoIdItem !== formData.idItem) {
-        setFormData(prev => ({ ...prev, pacote: autoPacote, idItem: autoIdItem }));
-      }
     }
+    
+    const autoIdItem = sigla ? `${prefix}${String(maxItemNum + 1).padStart(3, '0')}` : '';
+
+    setFormData(prev => {
+      let updates = {};
+      if (!prev.pacote && autoPacote) updates.pacote = autoPacote;
+      if (!prev.departamento && deptToUse) updates.departamento = deptToUse;
+      
+      // Atualiza o ID do item apenas se mudou o departamento ou se está vazio
+      if (!prev.idItem || !prev.idItem.startsWith(prefix)) {
+          updates.idItem = autoIdItem;
+      }
+
+      if (Object.keys(updates).length > 0) {
+          return { ...prev, ...updates };
+      }
+      return prev;
+    });
+
   }, [items, formData.departamento]);
 
   const handleChange = (e) => {
@@ -129,66 +126,62 @@ export default function App() {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     let novoCentro = '', novoDept = '', novoCurso = '', novoOrientador = '', mesAno = '';
     let estudantes = [];
-    let captureAlunos = false;
+    let captureStudents = false;
 
     for (let i = 0; i < lines.length; i++) {
       const originalLine = lines[i];
+      // Normaliza para facilitar a busca (remove acentos e joga pra minúsculo)
       const lowerLine = originalLine.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
 
-      // 1. Centro (Reconhece CCE ou CFH diretamente)
-      if (!novoCentro) {
-        if (lowerLine.includes('centro') && lowerLine.includes('cce')) novoCentro = 'CCE';
-        else if (lowerLine.includes('centro') && lowerLine.includes('filosofia')) novoCentro = 'CFH';
-        else if (lowerLine.includes('centro de ')) novoCentro = originalLine.replace(/.*?(centro de .*)/i, '$1').trim();
-      }
+      if (!novoCentro && lowerLine.includes('cce')) novoCentro = 'CCE';
+      if (!novoCentro && lowerLine.includes('cfh')) novoCentro = 'CFH';
 
-      // 2. Departamento (Reconhece LLV diretamente)
-      if (!novoDept) {
-        if (lowerLine.includes('departamento') && lowerLine.includes('llv')) novoDept = 'LLV';
-        else if (lowerLine.includes('departamento') && lowerLine.includes('lingua')) novoDept = 'LLV';
-        else if (lowerLine.includes('departamento') && lowerLine.includes('psicologia')) novoDept = 'Psicologia';
-        else if (lowerLine.includes('departamento de ')) novoDept = originalLine.replace(/.*?(departamento de .*)/i, '$1').trim();
+      if (!novoDept && lowerLine.includes('llv')) novoDept = 'LLV';
+      if (!novoDept && lowerLine.includes('men')) novoDept = 'MEN';
+      
+      if (!novoCurso && (lowerLine.includes('disciplina') || lowerLine.includes('curso'))) {
+        novoCurso = originalLine.replace(/.*?(disciplina|curso)\s*[:\-]?\s*/i, '').trim();
       }
       
-      // 3. Disciplina / Curso
-      if (!novoCurso && (lowerLine.includes('disciplina:') || lowerLine.includes('curso:'))) {
-        novoCurso = originalLine.replace(/.*?(disciplina|curso)\s*:?/i, '').trim();
-      }
-      
-      // 4. Orientador (Tolerante a Profª, Prof., Orientadora)
+      // Quando encontra o orientador, ativa a flag para começar a ler os alunos nas linhas abaixo
       if (!novoOrientador && (lowerLine.includes('prof') || lowerLine.includes('orientador'))) {
-        let prof = originalLine.replace(/.*?(prof(a|essor|essora|ª|\.)?|orientador(a)?)\s*:?/i, '').trim();
-        prof = prof.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim(); // Remove pontuação inicial
-        if (prof.length > 3) novoOrientador = prof;
+        novoOrientador = originalLine.replace(/.*?(prof(a|essor|essora|ª|\.)?|orientador(a)?)\s*[:\-]?\s*/i, '').trim();
+        novoOrientador = novoOrientador.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
+        captureStudents = true; 
+        continue;
       }
 
-      // 5. Mês e Ano (Agosto de 2002)
+      // Procura data (Mês e Ano)
       const matchDate = lowerLine.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/);
       if (matchDate && !mesAno) {
         const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
         mesAno = `${matchDate[2]}-${monthMap[matchDate[1]]}`;
-        captureAlunos = false; 
+        captureStudents = false; // Bateu na data, para de ler alunos
+        continue;
       }
       
-      // 6. Estudantes (Ativa a captura ao ler a palavra chave)
-      if (lowerLine.includes('academico') || lowerLine.includes('aluno') || lowerLine.includes('discente')) {
-         captureAlunos = true;
-         let nome = originalLine.replace(/.*?(academicos|academica|academico|alunos|aluno|discentes|discente)(s)?(a)?(s)?\s*:?/i, '').trim();
-         nome = nome.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
-         if(nome && nome.length > 3) estudantes.push(nome);
+      // Bateu no nome da cidade, para de ler alunos
+      if (lowerLine.includes('florianopolis')) {
+         captureStudents = false;
          continue;
       }
 
-      // Continua capturando nomes nas linhas de baixo
-      if (captureAlunos) {
-          if (lowerLine.includes('florianopolis') || matchDate || lowerLine.includes('prof') || lowerLine.includes('disciplina')) {
-              captureAlunos = false;
-          } else {
-              let nome = originalLine.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
-              if (nome.length > 3 && estudantes.length < 3) {
-                  estudantes.push(nome);
-              }
-          }
+      // Zona de captura de estudantes (Tudo o que estiver entre o Orientador e a Cidade/Data)
+      if (captureStudents) {
+         // Se a linha começar com a palavra acadêmicos, limpa e pega o nome na frente (se houver)
+         if (lowerLine.includes('academicos') || lowerLine.includes('alunos')) {
+             let inlineName = originalLine.replace(/.*?(academicos|alunos)\s*[:\-]?\s*/i, '').trim();
+             if (inlineName.length > 3) estudantes.push(inlineName);
+             continue;
+         }
+         
+         // Limpa pontuações estranhas no início da linha
+         let nome = originalLine.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim(); 
+         
+         // Se for um nome válido, salva
+         if (nome.length > 4 && estudantes.length < 3 && !nome.includes('"') && !nome.includes('“')) {
+             estudantes.push(nome);
+         }
       }
     }
 
@@ -247,13 +240,13 @@ export default function App() {
       });
       
       setStatus('success');
-      // Preserva o Pacote, Centro e Departamento para o próximo item
+      // Limpa os campos pessoais, mas retém Pacote, Centro e Departamento
       setFormData(prev => ({
         ...initialFormState,
         pacote: prev.pacote,
         centro: prev.centro,
         departamento: prev.departamento,
-        idItem: prev.idItem
+        idItem: prev.idItem 
       }));
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
@@ -281,7 +274,7 @@ export default function App() {
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
       <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] md:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
-        {/* Cabeçalho */}
+        {/* Cabeçalho Mondrian */}
         <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
           <div className="bg-[#c2185b] flex-1 p-6 md:p-8 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
             <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
@@ -303,31 +296,26 @@ export default function App() {
           </div>
         </div>
 
-        {/* Registro */}
+        {/* Formulário de Registro */}
         {activeTab === 'registro' && (
           <div className="flex flex-col bg-white">
-            
-            {/* Assistente de Câmera Discreto no Topo do Formulário */}
-            <div className="flex flex-col sm:flex-row items-center bg-black p-3 md:p-4 border-b-[8px] border-black">
-               <div className="bg-[#ffb300] border-[4px] border-black px-4 py-2 font-black uppercase text-xs md:text-sm shadow-[4px_4px_0px_0px_rgba(255,255,255,1)] mb-3 sm:mb-0 sm:mr-4">
-                  OCR Capa
-               </div>
-               <p className="text-white font-bold text-xs md:text-sm flex-1 text-center sm:text-left mb-3 sm:mb-0">
-                  {ocrStatus === 'loading' ? 'Processando Imagem... Aguarde (Isso leva alguns segundos)' : 'A leitura da foto preencherá os campos automaticamente.'}
-               </p>
-               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
-               <button 
-                  type="button"
-                  onClick={() => fileInputRef.current.click()} 
-                  disabled={ocrStatus === 'loading'}
-                  className="w-full sm:w-auto bg-[#00bcd4] text-black font-black uppercase tracking-wider text-sm md:text-base px-6 py-2 border-[4px] border-white hover:bg-cyan-300 transition-colors disabled:opacity-50"
-               >
-                  {ocrStatus === 'loading' ? 'Lendo...' : 'Usar Câmera'}
-               </button>
+
+            {/* Módulo de Câmera Discreto */}
+            <div 
+              className="bg-black py-4 px-6 flex items-center justify-between cursor-pointer hover:bg-gray-800 transition-colors border-b-[6px] border-black" 
+              onClick={() => fileInputRef.current.click()}
+            >
+                <div className="flex items-center gap-3 text-white">
+                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
+                   <span className="font-black uppercase tracking-widest text-sm md:text-base">
+                      {ocrStatus === 'loading' ? 'Lendo Capa e Processando Dados...' : 'Ler Capa com Câmera'}
+                   </span>
+                </div>
+                <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
             </div>
 
-            {ocrStatus === 'success' && <div className="p-3 bg-green-200 border-b-[6px] border-black font-black text-sm uppercase text-center text-green-900">✓ Dados da capa extraídos e inseridos no formulário! Revise os campos.</div>}
-            {ocrStatus === 'error' && <div className="p-3 bg-red-200 border-b-[6px] border-black font-black text-sm uppercase text-center text-red-900">⚠ A foto ficou ilegível. Preencha manualmente.</div>}
+            {ocrStatus === 'success' && <div className="p-2 bg-[#00bcd4] border-b-[6px] border-black font-black text-xs md:text-sm uppercase text-center text-black">✓ Informações da capa capturadas com sucesso!</div>}
+            {ocrStatus === 'error' && <div className="p-2 bg-[#c2185b] border-b-[6px] border-black font-black text-xs md:text-sm uppercase text-center text-white">⚠ Não foi possível ler a imagem com clareza.</div>}
 
             {showConfirm ? (
               <div className="flex flex-col gap-6 p-6 md:p-10 animate-in fade-in zoom-in duration-300">
@@ -341,13 +329,13 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-6">
-                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Confirmar e Enviar</button>
-                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-[#ffb300] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-yellow-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar e Editar</button>
+                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Salvar na Planilha</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar</button>
                 </div>
               </div>
             ) : (
               <form onSubmit={handlePreSubmit} className="flex flex-col gap-8 p-6 md:p-10">
-                {/* Identificadores */}
+                {/* Identificadores Mondrian Block */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">ID Pacote</label>
@@ -359,15 +347,15 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Lotação */}
+                {/* Lotação Mondrian Block */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">Centro</label>
-                    <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">Departamento</label>
-                    <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Disciplina (Opcional)</label>
@@ -375,7 +363,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Pessoas */}
+                {/* Pessoas Mondrian Block */}
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) (Opcional)</label>
@@ -397,7 +385,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Metadados */}
+                {/* Metadados Mondrian Block */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">Mês e Ano</label>
@@ -414,15 +402,15 @@ export default function App() {
                 </div>
 
                 <button type="submit" disabled={status === 'loading'} className="mt-4 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] disabled:opacity-50">
-                  {status === 'loading' ? 'Enviando...' : 'Revisar e Salvar'}
+                  {status === 'loading' ? 'Enviando...' : 'Revisar Informações'}
                 </button>
-                {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Salvo com sucesso!</p></div>}
+                {status === 'success' && <div className="bg-[#00bcd4] border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Salvo na Planilha!</p></div>}
               </form>
             )}
           </div>
         )}
 
-        {/* Acervo */}
+        {/* Visualização de Acervo */}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
             {fetchError && (
@@ -433,7 +421,7 @@ export default function App() {
             
             {loadingList ? (
               <div className="flex-1 flex items-center justify-center">
-                <p className="font-black text-2xl uppercase animate-pulse">Lendo Planilha...</p>
+                <p className="font-black text-2xl uppercase animate-pulse">Consultando Planilha...</p>
               </div>
             ) : (
               <div className="overflow-x-auto border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
@@ -449,7 +437,7 @@ export default function App() {
                   </thead>
                   <tbody className="bg-gray-50">
                     {sortedItems.length === 0 ? (
-                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">Acervo Vazio.</td></tr>
+                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
                         <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0">
