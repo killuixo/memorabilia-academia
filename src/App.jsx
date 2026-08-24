@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 export default function App() {
-  const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyjyMRiQVq4VJDHiJQTlt0kFL0pWyNmieJesQt9TqRD-rw6QFBEKjrr9KHh662ABw3s/exec';
-
   const [activeTab, setActiveTab] = useState('registro'); // 'registro' ou 'acervo'
   const [items, setItems] = useState([]);
   const [sortConfig, setSortConfig] = useState({ key: 'Data/Hora', direction: 'desc' });
@@ -21,6 +19,78 @@ export default function App() {
   
   const [ocrStatus, setOcrStatus] = useState('idle'); // idle, loading, success, error
   const fileInputRef = useRef(null);
+
+  const fetchItems = async () => {
+    if (!import.meta.env.VITE_GOOGLE_SCRIPT_URL) return;
+    setLoadingList(true);
+    setFetchError('');
+    try {
+      const response = await fetch(import.meta.env.VITE_GOOGLE_SCRIPT_URL);
+      const text = await response.text();
+      
+      try {
+        const data = JSON.parse(text);
+        if (Array.isArray(data)) {
+           setItems(data);
+        } else {
+           setFetchError("A resposta não é uma lista válida. Erro na formatação dos dados.");
+        }
+      } catch(e) {
+        setFetchError("Erro: A planilha não retornou dados em JSON. Verifique se publicou como 'Nova Versão' no Apps Script.");
+      }
+    } catch (err) {
+      setFetchError("Falha de comunicação com o servidor. O link está correto?");
+    } finally {
+      setLoadingList(false);
+    }
+  };
+
+  // Carrega os itens logo ao abrir o app para descobrir o último pacote
+  useEffect(() => {
+    fetchItems();
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'acervo') {
+       fetchItems();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (items.length > 0) {
+      const lastItem = items[items.length - 1];
+      
+      // 1. Sugere o pacote mais recente se o campo estiver vazio
+      let autoPacote = formData.pacote;
+      if (!autoPacote && lastItem && lastItem["ID Pacote"]) {
+        autoPacote = lastItem["ID Pacote"];
+      }
+
+      // 2. Calcula o próximo ID Item baseado no departamento atual ou no último registrado
+      const deptToUse = formData.departamento || (lastItem ? lastItem["Departamento"] : 'MEN');
+      const sigla = getSigla(deptToUse);
+      let maxItemNum = 0;
+      const prefix = `REL-${sigla}-`;
+      
+      items.forEach(item => {
+        const id = (item["ID Item"] || '').toUpperCase();
+        if (id.startsWith(prefix)) {
+          const numStr = id.replace(prefix, '');
+          const num = parseInt(numStr, 10);
+          if (!isNaN(num) && num > maxItemNum) {
+            maxItemNum = num;
+          }
+        }
+      });
+      const autoIdItem = `${prefix}${String(maxItemNum + 1).padStart(3, '0')}`;
+
+      setFormData(prev => ({
+        ...prev,
+        pacote: autoPacote,
+        idItem: autoIdItem
+      }));
+    }
+  }, [items, formData.departamento]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -54,77 +124,52 @@ export default function App() {
       .substring(0, 3) || 'XXX';
   };
 
-  const calculateNextIds = (prefixoPacote, siglaDept) => {
-    let maxPacote = 0;
-    let maxItem = 0;
-
-    items.forEach(item => {
-      const pct = item["ID Pacote"] || '';
-      if (pct.toUpperCase().startsWith(prefixoPacote.toUpperCase())) {
-        const num = parseInt(pct.replace(/\D/g, ''), 10);
-        if (!isNaN(num) && num > maxPacote) maxPacote = num;
-      }
-
-      const id = item["ID Item"] || '';
-      const prefixoItem = `REL-${siglaDept.toUpperCase()}-`;
-      if (id.toUpperCase().startsWith(prefixoItem)) {
-        const parts = id.split('-');
-        if (parts.length >= 3) {
-          const num = parseInt(parts[parts.length - 1], 10);
-          if (!isNaN(num) && num > maxItem) maxItem = num;
-        }
-      }
-    });
-
-    const nextPacote = `${prefixoPacote.toUpperCase()}${String(maxPacote + 1).padStart(3, '0')}`;
-    const nextIdItem = `REL-${siglaDept.toUpperCase()}-${String(maxItem + 1).padStart(3, '0')}`;
-
-    return { nextPacote, nextIdItem };
-  };
-
   const parseOCR = (text) => {
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     let novoCentro = '', novoDept = '', novoCurso = '', novoOrientador = '', mesAno = '';
     let estudantes = [];
     let lendoEstudantes = false;
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Normalização robusta: minúsculas e sem acentos para evitar erros do OCR
-      const normalized = line.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
+      const originalLine = lines[i];
+      // Normalização agressiva para o Tesseract (remove acentos, pontuações estranhas, deixa tudo minúsculo)
+      const line = originalLine.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s\d:-]/g, ' ');
 
-      if (normalized.includes('centro de') && !novoCentro) novoCentro = line;
-      if (normalized.includes('departamento de') && !novoDept) novoDept = line;
+      if (line.includes('centro de ') && !novoCentro) novoCentro = originalLine;
+      if (line.includes('departamento de ') && !novoDept) novoDept = originalLine;
       
-      if ((normalized.includes('disciplina') || normalized.includes('curso')) && !novoCurso) {
-        novoCurso = line.replace(/^(.*?)(disciplina|curso(\s*de)?)\s*:?/i, '').trim();
+      if ((line.includes('disciplina') || line.includes('pratica de ensino') || line.includes('curso')) && !novoCurso) {
+        novoCurso = originalLine.replace(/^(.*?)(disciplina|curso)(\s*de)?\s*:?/i, '').trim();
       }
       
-      if ((normalized.includes('prof') || normalized.includes('orientador')) && !novoOrientador) {
-        novoOrientador = line.replace(/^(.*?)(prof(essor)?(a)?(.)?|orientador(a)?)\s*:?/i, '').trim();
+      if ((line.includes('prof') || line.includes('orientador') || line.includes('docente')) && !novoOrientador) {
+        // Limpa o início (ex: "Profª ") para pegar só o nome da professora/orientadora
+        novoOrientador = originalLine.replace(/^(.*?)(prof(essor)?(a)?(.)?|orientador(a)?|docente)\s*:?/i, '').replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim();
       }
 
-      const matchDate = normalized.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(20\d{2}|19\d{2})/);
+      // Busca Mês e Ano por extenso (ex: Agosto de 2002)
+      const matchDate = line.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/);
       if (matchDate && !mesAno) {
         const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
         mesAno = `${matchDate[2]}-${monthMap[matchDate[1]]}`;
+        lendoEstudantes = false; // Se achou a data no rodapé, para de ler nomes
       }
       
-      // Gatilho para começar a ler os nomes dos estudantes
-      if (normalized.includes('academico') || normalized.includes('aluno') || normalized.includes('discente') || normalized.includes('estudante')) {
+      // Gatilho para iniciar captura de 1 até 3 estudantes
+      if (line.includes('academico') || line.includes('aluno') || line.includes('discente') || line.includes('estudante')) {
          lendoEstudantes = true;
-         // Captura o nome se estiver na mesma linha (ex: "Acadêmicos: Adriana...")
-         let nome = line.replace(/^(.*?)(academicos|academica|academico|alunos|aluno|discentes|discente|estudantes|estudante)(s)?(a)?(s)?\s*:?/i, '').trim();
+         let nome = originalLine.replace(/^(.*?)(academicos|academica|academico|alunos|aluno|discentes|discente|estudantes|estudante)(s)?(a)?(s)?\s*:?/i, '').trim();
+         nome = nome.replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim(); // Remove dois pontos ou traços
          if(nome && nome.length > 3) estudantes.push(nome);
          continue;
       }
 
-      // Se o gatilho foi ativado, as próximas linhas são os estudantes 2 e 3
+      // Captura o 2º e 3º aluno nas linhas de baixo
       if (lendoEstudantes) {
-          if (normalized.includes('florianopolis') || matchDate || normalized.includes('prof') || normalized.includes('orientador') || normalized.includes('disciplina')) {
-              lendoEstudantes = false; // Parar de ler estudantes se achar o rodapé ou outra sessão
-          } else if (line.length > 3 && estudantes.length < 3) {
-              estudantes.push(line);
+          if (line.includes('florianopolis') || matchDate || line.includes('prof') || line.includes('orientador') || line.includes('disciplina')) {
+              lendoEstudantes = false;
+          } else if (originalLine.length > 3 && estudantes.length < 3) {
+              estudantes.push(originalLine.replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim());
           }
       }
     }
@@ -142,15 +187,9 @@ export default function App() {
       const result = await Tesseract.recognize(file, 'por');
       
       const parsed = parseOCR(result.data.text);
-      const prefixoPacote = formData.pacote ? formData.pacote.replace(/[0-9-]/g, '') || 'PCT' : 'PCT';
-      const sigla = getSigla(parsed.novoDept || formData.departamento || 'MEN');
       
-      const { nextPacote, nextIdItem } = calculateNextIds(prefixoPacote, sigla);
-
       setFormData(prev => ({
         ...prev,
-        pacote: prev.pacote || nextPacote,
-        idItem: nextIdItem,
         centro: parsed.novoCentro || prev.centro,
         departamento: parsed.novoDept || prev.departamento,
         curso: parsed.novoCurso || prev.curso,
@@ -177,16 +216,15 @@ export default function App() {
 
   const confirmAndSubmit = async () => {
     setShowConfirm(false);
-    if (!GOOGLE_SCRIPT_URL) {
-       setFetchError("URL do Google Script ausente. Configure a variável de ambiente VITE_GOOGLE_SCRIPT_URL.");
-       return;
+    if (!import.meta.env.VITE_GOOGLE_SCRIPT_URL) {
+      setStatus('error');
+      return;
     }
-
     setStatus('loading');
     try {
-      await fetch(GOOGLE_SCRIPT_URL, {
+      await fetch(import.meta.env.VITE_GOOGLE_SCRIPT_URL, {
         method: 'POST',
-        mode: 'no-cors', // Permite envio contornando bloqueios CORS do Google Apps Script
+        mode: 'no-cors',
         headers: { 
           'Content-Type': 'text/plain;charset=utf-8' 
         },
@@ -194,7 +232,13 @@ export default function App() {
       });
       
       setStatus('success');
-      setFormData(initialFormState);
+      // Preserva o Pacote, Centro e Departamento para facilitar a inserção do próximo relatório da mesma pilha!
+      setFormData(prev => ({
+        ...initialFormState,
+        pacote: prev.pacote,
+        centro: prev.centro,
+        departamento: prev.departamento
+      }));
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
@@ -203,39 +247,6 @@ export default function App() {
       setTimeout(() => setStatus('idle'), 3000);
     }
   };
-
-  const fetchItems = async () => {
-    if (!GOOGLE_SCRIPT_URL) return;
-    setLoadingList(true);
-    setFetchError('');
-    try {
-      const response = await fetch(GOOGLE_SCRIPT_URL);
-      const text = await response.text();
-      
-      try {
-        const data = JSON.parse(text);
-        if (Array.isArray(data)) {
-           setItems(data);
-        } else {
-           setFetchError("A resposta não é uma lista válida. Erro na formatação dos dados.");
-        }
-      } catch(e) {
-        setFetchError("Erro: A planilha não retornou dados em JSON. Verifique se publicou como 'Nova Versão' no Apps Script.");
-        console.error("Resposta recebida:", text);
-      }
-    } catch (err) {
-      console.error("Erro de rede:", err);
-      setFetchError("Falha de comunicação com o servidor. O link está correto?");
-    } finally {
-      setLoadingList(false);
-    }
-  };
-
-  useEffect(() => {
-    if(activeTab === 'acervo') {
-       fetchItems();
-    }
-  }, [activeTab]);
 
   const handleSort = (key) => {
     let direction = 'asc';
@@ -357,16 +368,16 @@ export default function App() {
                       <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm">Disciplina</label>
-                      <input required type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Disciplina (Opcional)</label>
+                      <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
 
                   {/* Bloco 3: Pessoas Envolvidas */}
                   <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-[#c2185b]">Nome do Orientador(a)</label>
-                      <input required type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-[#c2185b] text-gray-500">Nome do Orientador(a) (Opcional)</label>
+                      <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
                       <div className="flex flex-col gap-2">
@@ -391,9 +402,9 @@ export default function App() {
                       <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide">Código SIGA IFES</label>
-                      <select required name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white font-black cursor-pointer appearance-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                        <option value="" disabled>Selecione um código...</option>
+                      <label className="font-black text-black uppercase tracking-wide text-gray-500">Código SIGA IFES (Opcional)</label>
+                      <select name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white font-black cursor-pointer appearance-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                        <option value="">Nenhum</option>
                         <option value="125.31 - Provas. Exames. Trabalhos">125.31 - Provas. Exames. Trabalhos</option>
                         <option value="125.43 - Assentamentos individuais">125.43 - Assentamentos (Dossiê)</option>
                         <option value="125.62 - Estágios não obrigatórios">125.62 - Estágios não obrigatórios</option>
@@ -402,15 +413,16 @@ export default function App() {
                       </select>
                     </div>
                     <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide">Observações (Caixa/Estante de Destino)</label>
+                      <label className="font-black text-black uppercase tracking-wide text-gray-500">Observações (Caixa de Destino) (Opcional)</label>
                       <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
 
                   <button type="submit" disabled={status === 'loading'} className="mt-4 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] active:translate-y-1 transition-all disabled:opacity-50 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-                    Revisar e Salvar
+                    {status === 'loading' ? 'Enviando...' : 'Revisar e Salvar'}
                   </button>
                   {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Documento Salvo no Acervo!</p></div>}
+                  {status === 'error' && <div className="bg-red-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">⚠ Erro ao salvar. A URL do Google Script está configurada?</p></div>}
                 </form>
               </>
             )}
