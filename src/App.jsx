@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// URL direta do seu Google Script inserida para evitar erros de compilação no ambiente.
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyjyMRiQVq4VJDHiJQTlt0kFL0pWyNmieJesQt9TqRD-rw6QFBEKjrr9KHh662ABw3s/exec";
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('registro'); // 'registro' ou 'acervo'
   const [items, setItems] = useState([]);
@@ -21,59 +24,73 @@ export default function App() {
   const fileInputRef = useRef(null);
 
   const fetchItems = async () => {
-    if (!import.meta.env.VITE_GOOGLE_SCRIPT_URL) return;
+    if (!GOOGLE_SCRIPT_URL) return;
     setLoadingList(true);
     setFetchError('');
     try {
-      const response = await fetch(import.meta.env.VITE_GOOGLE_SCRIPT_URL);
+      const response = await fetch(GOOGLE_SCRIPT_URL);
       const text = await response.text();
-      
       try {
         const data = JSON.parse(text);
         if (Array.isArray(data)) {
            setItems(data);
         } else {
-           setFetchError("A resposta não é uma lista válida. Erro na formatação dos dados.");
+           setFetchError("Erro: A resposta não é uma lista válida.");
         }
       } catch(e) {
-        setFetchError("Erro: A planilha não retornou dados em JSON. Verifique se publicou como 'Nova Versão' no Apps Script.");
+        setFetchError("Erro: A planilha não retornou JSON válido. Verifique o link ou a implantação.");
       }
     } catch (err) {
-      setFetchError("Falha de comunicação com o servidor. O link está correto?");
+      setFetchError("Falha de comunicação com o servidor.");
     } finally {
       setLoadingList(false);
     }
   };
 
-  // Carrega os itens logo ao abrir o app para descobrir o último pacote
   useEffect(() => {
     fetchItems();
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'acervo') {
-       fetchItems();
-    }
+    if (activeTab === 'acervo') fetchItems();
   }, [activeTab]);
 
   useEffect(() => {
     if (items.length > 0) {
       const lastItem = items[items.length - 1];
-      
-      // 1. Sugere o pacote mais recente se o campo estiver vazio
-      let autoPacote = formData.pacote;
-      if (!autoPacote && lastItem && lastItem["ID Pacote"]) {
-        autoPacote = lastItem["ID Pacote"];
-      }
 
-      // 2. Calcula o próximo ID Item baseado no departamento atual ou no último registrado
+      // 1. Sugere o pacote mais recente se o campo estiver vazio
+      let autoPacote = formData.pacote || (lastItem ? lastItem["ID Pacote"] : '');
+
+      // 2. Identifica o departamento e a sigla correta
       const deptToUse = formData.departamento || (lastItem ? lastItem["Departamento"] : 'MEN');
+
+      const getSigla = (nome) => {
+        if(!nome) return 'XXX';
+        // Se for uma sigla (ex: LLV, MEN, CCE), não tenta quebrar em letras
+        if(nome.trim().length <= 5 && !nome.includes(' ')) return nome.trim().toUpperCase();
+
+        const ignore = ['de', 'da', 'do', 'das', 'dos', 'e', 'departamento', 'centro', 'curso', '-'];
+        let cleanName = nome.toLowerCase()
+          .normalize('NFD').replace(/[\u0300-\u036f]/g, "") 
+          .replace(/departamento de /g, '')
+          .replace(/centro de /g, '');
+        
+        return cleanName.split(' ')
+          .filter(w => !ignore.includes(w) && w.length > 0)
+          .map(w => w[0])
+          .join('')
+          .toUpperCase()
+          .substring(0, 3) || 'XXX';
+      };
+
       const sigla = getSigla(deptToUse);
-      let maxItemNum = 0;
       const prefix = `REL-${sigla}-`;
+      let maxItemNum = 0;
       
+      // Procura o maior número com O MESMO prefixo exato (REL-LLV-)
       items.forEach(item => {
-        const id = (item["ID Item"] || '').toUpperCase();
+        const id = String(item["ID Item"] || '').toUpperCase();
         if (id.startsWith(prefix)) {
           const numStr = id.replace(prefix, '');
           const num = parseInt(numStr, 10);
@@ -82,13 +99,13 @@ export default function App() {
           }
         }
       });
+      
       const autoIdItem = `${prefix}${String(maxItemNum + 1).padStart(3, '0')}`;
 
-      setFormData(prev => ({
-        ...prev,
-        pacote: autoPacote,
-        idItem: autoIdItem
-      }));
+      // Atualiza os campos apenas se mudou (para evitar loop infinito)
+      if (autoPacote !== formData.pacote || autoIdItem !== formData.idItem) {
+        setFormData(prev => ({ ...prev, pacote: autoPacote, idItem: autoIdItem }));
+      }
     }
   }, [items, formData.departamento]);
 
@@ -108,68 +125,69 @@ export default function App() {
     });
   };
 
-  const getSigla = (nome) => {
-    if(!nome) return 'XXX';
-    const ignore = ['de', 'da', 'do', 'das', 'dos', 'e', 'departamento', 'centro', '-'];
-    let cleanName = nome.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, "") // remove acentos para criar sigla limpa
-      .replace(/departamento de /g, '')
-      .replace(/centro de /g, '');
-    
-    return cleanName.split(' ')
-      .filter(w => !ignore.includes(w) && w.length > 0)
-      .map(w => w[0])
-      .join('')
-      .toUpperCase()
-      .substring(0, 3) || 'XXX';
-  };
-
   const parseOCR = (text) => {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     let novoCentro = '', novoDept = '', novoCurso = '', novoOrientador = '', mesAno = '';
     let estudantes = [];
-    let lendoEstudantes = false;
+    let captureAlunos = false;
 
     for (let i = 0; i < lines.length; i++) {
       const originalLine = lines[i];
-      // Normalização agressiva para o Tesseract (remove acentos, pontuações estranhas, deixa tudo minúsculo)
-      const line = originalLine.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s\d:-]/g, ' ');
+      const lowerLine = originalLine.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
 
-      if (line.includes('centro de ') && !novoCentro) novoCentro = originalLine;
-      if (line.includes('departamento de ') && !novoDept) novoDept = originalLine;
-      
-      if ((line.includes('disciplina') || line.includes('pratica de ensino') || line.includes('curso')) && !novoCurso) {
-        novoCurso = originalLine.replace(/^(.*?)(disciplina|curso)(\s*de)?\s*:?/i, '').trim();
-      }
-      
-      if ((line.includes('prof') || line.includes('orientador') || line.includes('docente')) && !novoOrientador) {
-        // Limpa o início (ex: "Profª ") para pegar só o nome da professora/orientadora
-        novoOrientador = originalLine.replace(/^(.*?)(prof(essor)?(a)?(.)?|orientador(a)?|docente)\s*:?/i, '').replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim();
+      // 1. Centro (Reconhece CCE ou CFH diretamente)
+      if (!novoCentro) {
+        if (lowerLine.includes('centro') && lowerLine.includes('cce')) novoCentro = 'CCE';
+        else if (lowerLine.includes('centro') && lowerLine.includes('filosofia')) novoCentro = 'CFH';
+        else if (lowerLine.includes('centro de ')) novoCentro = originalLine.replace(/.*?(centro de .*)/i, '$1').trim();
       }
 
-      // Busca Mês e Ano por extenso (ex: Agosto de 2002)
-      const matchDate = line.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/);
+      // 2. Departamento (Reconhece LLV diretamente)
+      if (!novoDept) {
+        if (lowerLine.includes('departamento') && lowerLine.includes('llv')) novoDept = 'LLV';
+        else if (lowerLine.includes('departamento') && lowerLine.includes('lingua')) novoDept = 'LLV';
+        else if (lowerLine.includes('departamento') && lowerLine.includes('psicologia')) novoDept = 'Psicologia';
+        else if (lowerLine.includes('departamento de ')) novoDept = originalLine.replace(/.*?(departamento de .*)/i, '$1').trim();
+      }
+      
+      // 3. Disciplina / Curso
+      if (!novoCurso && (lowerLine.includes('disciplina:') || lowerLine.includes('curso:'))) {
+        novoCurso = originalLine.replace(/.*?(disciplina|curso)\s*:?/i, '').trim();
+      }
+      
+      // 4. Orientador (Tolerante a Profª, Prof., Orientadora)
+      if (!novoOrientador && (lowerLine.includes('prof') || lowerLine.includes('orientador'))) {
+        let prof = originalLine.replace(/.*?(prof(a|essor|essora|ª|\.)?|orientador(a)?)\s*:?/i, '').trim();
+        prof = prof.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim(); // Remove pontuação inicial
+        if (prof.length > 3) novoOrientador = prof;
+      }
+
+      // 5. Mês e Ano (Agosto de 2002)
+      const matchDate = lowerLine.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/);
       if (matchDate && !mesAno) {
         const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
         mesAno = `${matchDate[2]}-${monthMap[matchDate[1]]}`;
-        lendoEstudantes = false; // Se achou a data no rodapé, para de ler nomes
+        captureAlunos = false; 
       }
       
-      // Gatilho para iniciar captura de 1 até 3 estudantes
-      if (line.includes('academico') || line.includes('aluno') || line.includes('discente') || line.includes('estudante')) {
-         lendoEstudantes = true;
-         let nome = originalLine.replace(/^(.*?)(academicos|academica|academico|alunos|aluno|discentes|discente|estudantes|estudante)(s)?(a)?(s)?\s*:?/i, '').trim();
-         nome = nome.replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim(); // Remove dois pontos ou traços
+      // 6. Estudantes (Ativa a captura ao ler a palavra chave)
+      if (lowerLine.includes('academico') || lowerLine.includes('aluno') || lowerLine.includes('discente')) {
+         captureAlunos = true;
+         let nome = originalLine.replace(/.*?(academicos|academica|academico|alunos|aluno|discentes|discente)(s)?(a)?(s)?\s*:?/i, '').trim();
+         nome = nome.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
          if(nome && nome.length > 3) estudantes.push(nome);
          continue;
       }
 
-      // Captura o 2º e 3º aluno nas linhas de baixo
-      if (lendoEstudantes) {
-          if (line.includes('florianopolis') || matchDate || line.includes('prof') || line.includes('orientador') || line.includes('disciplina')) {
-              lendoEstudantes = false;
-          } else if (originalLine.length > 3 && estudantes.length < 3) {
-              estudantes.push(originalLine.replace(/^[^a-zA-ZÀ-ÿ]*/, '').trim());
+      // Continua capturando nomes nas linhas de baixo
+      if (captureAlunos) {
+          if (lowerLine.includes('florianopolis') || matchDate || lowerLine.includes('prof') || lowerLine.includes('disciplina')) {
+              captureAlunos = false;
+          } else {
+              let nome = originalLine.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
+              if (nome.length > 3 && estudantes.length < 3) {
+                  estudantes.push(nome);
+              }
           }
       }
     }
@@ -203,7 +221,6 @@ export default function App() {
       setOcrStatus('success');
       setTimeout(() => setOcrStatus('idle'), 4000);
     } catch (err) {
-      console.error(err);
       setOcrStatus('error');
       setTimeout(() => setOcrStatus('idle'), 4000);
     }
@@ -216,33 +233,31 @@ export default function App() {
 
   const confirmAndSubmit = async () => {
     setShowConfirm(false);
-    if (!import.meta.env.VITE_GOOGLE_SCRIPT_URL) {
+    if (!GOOGLE_SCRIPT_URL) {
       setStatus('error');
       return;
     }
     setStatus('loading');
     try {
-      await fetch(import.meta.env.VITE_GOOGLE_SCRIPT_URL, {
+      await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
         mode: 'no-cors',
-        headers: { 
-          'Content-Type': 'text/plain;charset=utf-8' 
-        },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(formData)
       });
       
       setStatus('success');
-      // Preserva o Pacote, Centro e Departamento para facilitar a inserção do próximo relatório da mesma pilha!
+      // Preserva o Pacote, Centro e Departamento para o próximo item
       setFormData(prev => ({
         ...initialFormState,
         pacote: prev.pacote,
         centro: prev.centro,
-        departamento: prev.departamento
+        departamento: prev.departamento,
+        idItem: prev.idItem
       }));
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
-      console.error(error);
       setStatus('error');
       setTimeout(() => setStatus('idle'), 3000);
     }
@@ -250,9 +265,7 @@ export default function App() {
 
   const handleSort = (key) => {
     let direction = 'asc';
-    if (sortConfig.key === key && sortConfig.direction === 'asc') {
-      direction = 'desc';
-    }
+    if (sortConfig.key === key && sortConfig.direction === 'asc') direction = 'desc';
     setSortConfig({ key, direction });
   };
 
@@ -268,7 +281,7 @@ export default function App() {
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
       <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] md:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
-        {/* Cabeçalho e Abas */}
+        {/* Cabeçalho */}
         <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
           <div className="bg-[#c2185b] flex-1 p-6 md:p-8 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
             <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
@@ -290,153 +303,131 @@ export default function App() {
           </div>
         </div>
 
-        {/* Conteúdo Aba: Registro */}
+        {/* Registro */}
         {activeTab === 'registro' && (
-          <div className="p-6 md:p-10 flex flex-col gap-8 bg-white">
+          <div className="flex flex-col bg-white">
             
+            {/* Assistente de Câmera Discreto no Topo do Formulário */}
+            <div className="flex flex-col sm:flex-row items-center bg-black p-3 md:p-4 border-b-[8px] border-black">
+               <div className="bg-[#ffb300] border-[4px] border-black px-4 py-2 font-black uppercase text-xs md:text-sm shadow-[4px_4px_0px_0px_rgba(255,255,255,1)] mb-3 sm:mb-0 sm:mr-4">
+                  OCR Capa
+               </div>
+               <p className="text-white font-bold text-xs md:text-sm flex-1 text-center sm:text-left mb-3 sm:mb-0">
+                  {ocrStatus === 'loading' ? 'Processando Imagem... Aguarde (Isso leva alguns segundos)' : 'A leitura da foto preencherá os campos automaticamente.'}
+               </p>
+               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
+               <button 
+                  type="button"
+                  onClick={() => fileInputRef.current.click()} 
+                  disabled={ocrStatus === 'loading'}
+                  className="w-full sm:w-auto bg-[#00bcd4] text-black font-black uppercase tracking-wider text-sm md:text-base px-6 py-2 border-[4px] border-white hover:bg-cyan-300 transition-colors disabled:opacity-50"
+               >
+                  {ocrStatus === 'loading' ? 'Lendo...' : 'Usar Câmera'}
+               </button>
+            </div>
+
+            {ocrStatus === 'success' && <div className="p-3 bg-green-200 border-b-[6px] border-black font-black text-sm uppercase text-center text-green-900">✓ Dados da capa extraídos e inseridos no formulário! Revise os campos.</div>}
+            {ocrStatus === 'error' && <div className="p-3 bg-red-200 border-b-[6px] border-black font-black text-sm uppercase text-center text-red-900">⚠ A foto ficou ilegível. Preencha manualmente.</div>}
+
             {showConfirm ? (
-              <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] animate-in fade-in zoom-in duration-300">
+              <div className="flex flex-col gap-6 p-6 md:p-10 animate-in fade-in zoom-in duration-300">
                 <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-4 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Departamento:</strong> <br/>{formData.departamento || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.curso || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(', ') || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
-                    {formData.observacoes && <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-black uppercase">Observações:</strong> <br/>{formData.observacoes}</div>}
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-6">
-                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 active:translate-y-1 transition-transform shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Confirmar e Enviar</button>
-                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-[#ffb300] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-yellow-300 active:translate-y-1 transition-transform shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar e Editar</button>
+                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Confirmar e Enviar</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-[#ffb300] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-yellow-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar e Editar</button>
                 </div>
               </div>
             ) : (
-              <>
-                {/* Assistente de Câmera Discreto no Topo */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 p-4 border-[4px] border-black bg-gray-50 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full">
-                  <div className="flex items-center gap-3">
-                    <span className="text-3xl" role="img" aria-label="Camera">📷</span>
-                    <div className="flex flex-col">
-                      <span className="font-black text-sm md:text-base uppercase tracking-tight">Leitura Automática</span>
-                      <span className="text-xs md:text-sm font-bold text-gray-600">Fotografe a capa para extrair os dados.</span>
-                    </div>
+              <form onSubmit={handlePreSubmit} className="flex flex-col gap-8 p-6 md:p-10">
+                {/* Identificadores */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide">ID Pacote</label>
+                    <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
-                  
-                  <div className="flex-1 flex justify-end w-full sm:w-auto">
-                    <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
-                    <button 
-                      type="button"
-                      onClick={() => fileInputRef.current.click()} 
-                      disabled={ocrStatus === 'loading'}
-                      className="w-full sm:w-auto bg-[#00bcd4] text-black font-black uppercase tracking-wider text-sm md:text-base px-6 py-3 border-[4px] border-black hover:bg-cyan-300 active:translate-y-1 transition-transform disabled:opacity-50"
-                    >
-                      {ocrStatus === 'loading' ? 'Processando...' : 'Usar Câmera'}
-                    </button>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID Item</label>
+                    <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
-                {ocrStatus === 'success' && <div className="p-3 bg-green-200 border-[4px] border-black font-black text-sm uppercase">✓ Dados extraídos com sucesso. Revise abaixo.</div>}
-                {ocrStatus === 'error' && <div className="p-3 bg-red-200 border-[4px] border-black font-black text-sm uppercase text-red-900">⚠ A foto ficou ilegível. Preencha manualmente.</div>}
+                {/* Lotação */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide">Centro</label>
+                    <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide">Departamento</label>
+                    <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  </div>
+                  <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Disciplina (Opcional)</label>
+                    <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  </div>
+                </div>
 
-                {/* Formulário Principal */}
-                <form onSubmit={handlePreSubmit} className="flex flex-col gap-8">
-                  
-                  {/* Bloco 1: Identificadores */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
+                {/* Pessoas */}
+                <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) (Opcional)</label>
+                    <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide">ID do Pacote (Prefixo/Nº)</label>
-                      <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: PCT001" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1</label>
+                      <input required type="text" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID do Item / Relatório</label>
-                      <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: REL-LLV-001" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2 (Opcional)</label>
+                      <input type="text" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3 (Opcional)</label>
+                      <input type="text" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
+                </div>
 
-                  {/* Bloco 2: Lotação */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm">Centro (Ex: CCE)</label>
-                      <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm">Departamento (Ex: LLV)</label>
-                      <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Disciplina (Opcional)</label>
-                      <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
+                {/* Metadados */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide">Mês e Ano</label>
+                    <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
-
-                  {/* Bloco 3: Pessoas Envolvidas */}
-                  <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-[#c2185b] text-gray-500">Nome do Orientador(a) (Opcional)</label>
-                      <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
-                      <div className="flex flex-col gap-2">
-                        <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1</label>
-                        <input required type="text" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2 (Opcional)</label>
-                        <input type="text" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3 (Opcional)</label>
-                        <input type="text" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                      </div>
-                    </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código SIGA (Opcional)</label>
+                    <input type="text" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
-
-                  {/* Bloco 4: Metadados */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide">Mês e Ano</label>
-                      <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-gray-500">Código SIGA IFES (Opcional)</label>
-                      <select name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white font-black cursor-pointer appearance-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                        <option value="">Nenhum</option>
-                        <option value="125.31 - Provas. Exames. Trabalhos">125.31 - Provas. Exames. Trabalhos</option>
-                        <option value="125.43 - Assentamentos individuais">125.43 - Assentamentos (Dossiê)</option>
-                        <option value="125.62 - Estágios não obrigatórios">125.62 - Estágios não obrigatórios</option>
-                        <option value="452.32 - Estágios obrigatórios">452.32 - Estágios obrigatórios</option>
-                        <option value="Outro (Especificar na observação)">Outro (Especificar na observação)</option>
-                      </select>
-                    </div>
-                    <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-gray-500">Observações (Caixa de Destino) (Opcional)</label>
-                      <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
+                  <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações (Opcional)</label>
+                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
+                </div>
 
-                  <button type="submit" disabled={status === 'loading'} className="mt-4 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] active:translate-y-1 transition-all disabled:opacity-50 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-                    {status === 'loading' ? 'Enviando...' : 'Revisar e Salvar'}
-                  </button>
-                  {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Documento Salvo no Acervo!</p></div>}
-                  {status === 'error' && <div className="bg-red-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">⚠ Erro ao salvar. A URL do Google Script está configurada?</p></div>}
-                </form>
-              </>
+                <button type="submit" disabled={status === 'loading'} className="mt-4 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] disabled:opacity-50">
+                  {status === 'loading' ? 'Enviando...' : 'Revisar e Salvar'}
+                </button>
+                {status === 'success' && <div className="bg-green-300 border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Salvo com sucesso!</p></div>}
+              </form>
             )}
           </div>
         )}
 
-        {/* Conteúdo Aba: Acervo */}
+        {/* Acervo */}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
             {fetchError && (
               <div className="mb-6 bg-red-200 border-[4px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                <p className="font-black text-red-900 uppercase">⚠ Problema ao ler a planilha:</p>
-                <p className="font-bold text-sm mt-1">{fetchError}</p>
-                <p className="font-bold text-xs mt-2 text-gray-700">Dica: No Google Apps Script, lembre-se de clicar em "Implantar" {'>'} "Gerenciar implantações" {'>'} Editar {'>'} Versão: "Nova Versão".</p>
+                <p className="font-black text-red-900 uppercase">⚠ Erro:</p><p className="font-bold text-sm mt-1">{fetchError}</p>
               </div>
             )}
             
@@ -450,32 +441,23 @@ export default function App() {
                   <thead>
                     <tr className="bg-[#00bcd4] text-black">
                       {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Orientador", "Mês/Ano"].map((header) => (
-                        <th 
-                          key={header} 
-                          onClick={() => handleSort(header)}
-                          className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 transition-colors last:border-r-0"
-                        >
-                          <div className="flex items-center gap-2">
-                            {header}
-                            {sortConfig.key === header && (
-                              <span>{sortConfig.direction === 'asc' ? '▲' : '▼'}</span>
-                            )}
-                          </div>
+                        <th key={header} onClick={() => handleSort(header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 last:border-r-0">
+                          {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                         </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="bg-gray-50">
                     {sortedItems.length === 0 ? (
-                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">Acervo Vazio ou não encontrado.</td></tr>
+                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">Acervo Vazio.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-yellow-100 transition-colors border-b-[4px] border-black last:border-b-0">
+                        <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0">
                           <td className="p-4 font-mono text-xs border-r-[4px] border-black">{item["Data/Hora"]}</td>
                           <td className="p-4 font-black border-r-[4px] border-black">{item["ID Pacote"]}</td>
                           <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,25) + '...'}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Departamento"]?.substring(0,10) + '...'}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,25)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Departamento"]?.substring(0,10)}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Estudante 1"]}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Orientador"]}</td>
                           <td className="p-4 font-black bg-[#ffe082]">{item["Mês/Ano"]}</td>
