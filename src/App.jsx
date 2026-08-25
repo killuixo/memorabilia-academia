@@ -46,7 +46,11 @@ const parseExtractedText = (rawText) => {
   // 1. Extrair Centro e Curso em linhas isoladas
   lines.forEach(line => {
     if (/^CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    if (/^CURSO DE/i.test(line)) parsed.curso = line.replace(/^CURSO DE/i, '').replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/^CURSO DE/i.test(line)) {
+      let textCurso = line.replace(/^CURSO DE/i, '');
+      textCurso = textCurso.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, ''); // Tesoura se houver "da Universidade"
+      parsed.curso = textCurso.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    }
   });
 
   // 2. Extrair Disciplina (Tenta o padrão explícito ou deduz pela linha anterior ao Orientador)
@@ -65,7 +69,7 @@ const parseExtractedText = (rawText) => {
 
   // 3. Extrair Curso (Caso esteja no meio de um parágrafo em vez de linha isolada)
   if (!parsed.curso) {
-    let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
+    let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
     if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
   }
 
