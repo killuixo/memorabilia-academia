@@ -38,16 +38,15 @@ const resizeImageForOCR = (file, maxWidth = 1200) => {
 };
 
 const parseExtractedText = (rawText) => {
-  let parsed = { centro: '', departamento: '', curso: '', disciplina: '', orientador: '', estudante1: '', estudante2: '', estudante3: '', mesAno: '' };
+  let parsed = { centro: '', curso: '', disciplina: '', orientador: '', estudante1: '', estudante2: '', estudante3: '', mesAno: '' };
   
   const fullText = rawText.replace(/\n/g, ' ');
   const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
 
-  // 1. Extrair Centro, Departamento e Curso em linhas isoladas
+  // 1. Extrair Centro e Curso em linhas isoladas
   lines.forEach(line => {
     if (/^CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    if (/^DEPARTAMENTO DE/i.test(line)) parsed.departamento = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    if (/^CURSO DE/i.test(line)) parsed.curso = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/^CURSO DE/i.test(line)) parsed.curso = line.replace(/^CURSO DE/i, '').replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
   });
 
   // 2. Extrair Disciplina (Tenta o padrão explícito ou deduz pela linha anterior ao Orientador)
@@ -82,8 +81,8 @@ const parseExtractedText = (rawText) => {
     parsed.mesAno = `${dateMatch[2]}-${month}`;
   }
 
-  // 6. Extrair Estudantes (Aceitando Aluna, Aluno, Acadêmicos e ignorando lixo como "Turma")
-  let acadMatch = rawText.match(/(?:Acad[eê]micos?|Alun[oa]s?)[:\s]*([\s\S]*?)(?:Florian[oó]polis|Relat[oó]rio|Turma|$)/i);
+  // 6. Extrair Estudantes (Aceitando Aluna, Aluno, Acadêmicos, Acadêmicas e ignorando lixo como "Turma")
+  let acadMatch = rawText.match(/(?:Acad[eê]mic[oa]s?|Alun[oa]s?)[:\s]*([\s\S]*?)(?:Florian[oó]polis|Relat[oó]rio|Turma|$)/i);
   let students = [];
   
   if (acadMatch) {
@@ -112,9 +111,9 @@ export default function App() {
   const [fetchError, setFetchError] = useState('');
 
   const initialFormState = {
-    pacote: '', idItem: '', centro: '', departamento: '',
+    pacote: '', idItem: '', centro: '', curso: '',
     estudante1: '', estudante2: '', estudante3: '', orientador: '',
-    disciplina: '', curso: '', mesAno: '', codigo: '', observacoes: ''
+    disciplina: '', mesAno: '', codigo: '', observacoes: ''
   };
 
   const [formData, setFormData] = useState(initialFormState);
@@ -234,7 +233,6 @@ export default function App() {
       setFormData(prev => ({
         ...prev,
         centro: parsedData.centro || prev.centro,
-        departamento: parsedData.departamento || prev.departamento,
         curso: parsedData.curso || prev.curso,
         disciplina: parsedData.disciplina || prev.disciplina,
         orientador: parsedData.orientador || prev.orientador,
@@ -275,12 +273,12 @@ export default function App() {
       
       setStatus('success');
       
-      // Limpa os dados do formulário, mas mantém o pacote, centro e departamentos para agilizar
+      // Limpa os dados do formulário, mas mantém o pacote, centro e curso para agilizar
       setFormData(prev => ({
         ...initialFormState,
         pacote: prev.pacote,
         centro: prev.centro,
-        departamento: prev.departamento,
+        curso: prev.curso,
         idItem: '' // Deixa em branco para o useEffect de ID preencher o próximo número
       }));
       
@@ -384,9 +382,8 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Departamento:</strong> <br/>{formData.departamento || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Curso:</strong> <br/>{formData.curso || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.disciplina || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Curso:</strong> <br/>{formData.curso || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.disciplina || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
@@ -417,21 +414,15 @@ export default function App() {
                     <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Departamento *</label>
-                    <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide">Curso *</label>
+                    <input required type="text" list="listaCursos" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-2">
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-xs">Curso</label>
-                      <input type="text" list="listaCursos" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina</label>
-                      <input type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina</label>
+                    <input type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   
                   <div className="flex flex-col gap-2">
@@ -496,7 +487,7 @@ export default function App() {
                 <table className="w-full text-left border-collapse whitespace-nowrap">
                   <thead>
                     <tr className="bg-[#00bcd4] text-black">
-                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Curso", "Disciplina", "Mês/Ano"].map((header) => (
+                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Curso", "Estudante 1", "Disciplina", "Mês/Ano"].map((header) => (
                         <th key={header} onClick={() => handleSort(header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 last:border-r-0">
                           {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                         </th>
@@ -505,7 +496,7 @@ export default function App() {
                   </thead>
                   <tbody className="bg-gray-50">
                     {sortedItems.length === 0 ? (
-                      <tr><td colSpan="9" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
+                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
                         <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0">
@@ -513,9 +504,8 @@ export default function App() {
                           <td className="p-4 font-black border-r-[4px] border-black">{item["ID Pacote"]}</td>
                           <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,20)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Departamento"]?.substring(0,10)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Estudante 1"]}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Curso"]?.substring(0,20)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Estudante 1"]}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Disciplina"]?.substring(0,20)}</td>
                           <td className="p-4 font-black bg-[#ffe082]">{item["Mês/Ano"]}</td>
                         </tr>
