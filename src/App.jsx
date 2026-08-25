@@ -40,69 +40,109 @@ const resizeImageForOCR = (file, maxWidth = 1200) => {
 const parseExtractedText = (rawText) => {
   let parsed = { centro: '', curso: '', disciplina: '', orientador: '', estudante1: '', estudante2: '', estudante3: '', mesAno: '' };
   
-  const fullText = rawText.replace(/\n/g, ' ');
-  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+  const rawLines = rawText.split('\n').map(l => l.trim());
+  const lines = rawLines.filter(l => l.length > 2); // Linhas com conteúdo
+  const fullText = lines.join(' ');
 
-  // 1. Extrair Centro e Curso em linhas isoladas
-  lines.forEach(line => {
-    if (/^CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    if (/^CURSO DE/i.test(line)) {
-      let textCurso = line.replace(/^CURSO DE/i, '');
-      textCurso = textCurso.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, ''); // Tesoura se houver "da Universidade"
-      parsed.curso = textCurso.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    }
-  });
-
-  // 2. Extrair Disciplina (Tenta o padrão explícito ou deduz pela linha anterior ao Orientador)
-  let discMatch = rawText.match(/Disciplina:?\s*([^\n]+)/i) || fullText.match(/estágio de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
-  if (discMatch) {
-    parsed.disciplina = discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-  } else {
-    let profIndex = lines.findIndex(l => /(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)/i.test(l));
-    if (profIndex > 0) {
-      let lineAbove = lines[profIndex - 1];
-      if (!/DEPARTAMENTO|CENTRO|CURSO/i.test(lineAbove)) {
-         parsed.disciplina = lineAbove.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  // 1. Centro (Extrair Sigla)
+  let centroLine = lines.find(l => /^CENTRO\b/i.test(l));
+  if (centroLine) {
+      let match = centroLine.match(/(?:-|–|—)\s*([A-Z]{3,4})\b/);
+      if (match) {
+          parsed.centro = match[1];
+      } else {
+          const upper = centroLine.toUpperCase();
+          if (upper.includes('COMUNICA') || upper.includes('EXPRESS')) parsed.centro = 'CCE';
+          else if (upper.includes('EDUCA')) parsed.centro = 'CED';
+          else if (upper.includes('FILOSOFIA') || upper.includes('HUMANAS')) parsed.centro = 'CFH';
+          else if (upper.includes('TECNOL')) parsed.centro = 'CTC';
+          else if (upper.includes('DESPORTO') || upper.includes('FISICA') || upper.includes('FÍSICA')) parsed.centro = 'CDS';
+          else if (upper.includes('BIOLOGICA') || upper.includes('BIOLÓGICA')) parsed.centro = 'CCB';
+          else if (upper.includes('FISICAS') || upper.includes('MATEMATICAS') || upper.includes('FÍSICAS') || upper.includes('MATEMÁTICAS')) parsed.centro = 'CFM';
+          else if (upper.includes('SAUDE') || upper.includes('SAÚDE')) parsed.centro = 'CCS';
+          else if (upper.includes('JURIDICA') || upper.includes('JURÍDICA') || upper.includes('DIREITO')) parsed.centro = 'CCJ';
+          else if (upper.includes('AGRARIA') || upper.includes('AGRÁRIA')) parsed.centro = 'CCA';
+          else if (upper.includes('SOCIO') || upper.includes('SÓCIO') || upper.includes('ECONOMICA') || upper.includes('ECONÔMICA')) parsed.centro = 'CSE';
+          else {
+              let parts = centroLine.split(' ');
+              let lastWord = parts[parts.length - 1];
+              parsed.centro = /^[A-Z]{3,4}$/.test(lastWord) ? lastWord : centroLine;
+          }
       }
-    }
   }
 
-  // 3. Extrair Curso (Caso esteja no meio de um parágrafo em vez de linha isolada)
-  if (!parsed.curso) {
-    let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
-    if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  // 2. Curso (Tolerante a "CURSO LETRAS" sem o "DE")
+  let cursoLine = lines.find(l => /^CURSO\b/i.test(l));
+  if (cursoLine) {
+     let textCurso = cursoLine.replace(/^CURSO(?: DE)?\s*/i, '');
+     textCurso = textCurso.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
+     textCurso = textCurso.replace(/(?:-|–|—)\s*[A-Z0-9]+\s*$/, ''); // Remove códigos no fim
+     parsed.curso = textCurso.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  } else {
+     let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
+     if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
   }
 
-  // 4. Extrair Orientador(a) (Agora tolerante a Professora: com dois pontos)
-  let oriMatch = rawText.match(/(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*([A-Z][a-zA-ZÀ-ÿ\s]+)/i);
-  if (oriMatch) parsed.orientador = oriMatch[1].split('\n')[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+  // 3. Disciplina
+  let discLine = lines.find(l => /^DISCIPLINA/i.test(l));
+  if (discLine) {
+     let textDisc = discLine.replace(/^DISCIPLINA[:\s]*/i, '');
+     textDisc = textDisc.replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, ''); // Remove códigos como MEN5238
+     parsed.disciplina = textDisc.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  } else {
+     let profIndex = lines.findIndex(l => /(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)/i.test(l));
+     if (profIndex > 0) {
+        let lineAbove = lines[profIndex - 1];
+        if (!/DEPARTAMENTO|CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
+           parsed.disciplina = lineAbove.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+        }
+     }
+  }
 
-  // 5. Extrair Mês e Ano
+  // 4. Orientador(a) (Ignora títulos como Mst, Dra, etc.)
+  let profLine = lines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
+  if (profLine) {
+      let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '');
+      profText = profText.replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, ''); // Corta títulos secundários
+      parsed.orientador = profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+  }
+
+  // 5. Estudantes (Usa a quebra de linha real para não invadir o título do trabalho)
+  let rawStudentIndex = rawLines.findIndex(l => /^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)\b/i.test(l));
+  let students = [];
+  if (rawStudentIndex !== -1) {
+      let firstStudentLine = rawLines[rawStudentIndex].replace(/^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)[:\s]*/i, '');
+      firstStudentLine = firstStudentLine.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+      if (firstStudentLine.includes(' ') && firstStudentLine.length > 5) students.push(firstStudentLine);
+      
+      // Checa as próximas duas linhas, parando IMEDIATAMENTE se houver uma linha em branco
+      for (let i = rawStudentIndex + 1; i <= rawStudentIndex + 2 && i < rawLines.length; i++) {
+          if (rawLines[i].length <= 2) break; // A LINHA EM BRANCO SALVA O TÍTULO DE VIRAR ALUNO
+          let cleaned = rawLines[i].split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+          if (cleaned.includes(' ') && cleaned.length > 5) {
+              students.push(cleaned);
+          } else {
+              break;
+          }
+      }
+  } else {
+      // Fallback
+      students = lines.slice(0, 6)
+        .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l))
+        .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
+  }
+  
+  if (students[0]) parsed.estudante1 = students[0];
+  if (students[1]) parsed.estudante2 = students[1];
+  if (students[2]) parsed.estudante3 = students[2];
+
+  // 6. Mês e Ano
   let dateMatch = fullText.match(/([a-zA-Zç]+)\s+de\s+(20\d{2}|19\d{2})/i);
   if (dateMatch) {
     const monthMap = { 'janeiro':'01','fevereiro':'02','março':'03','abril':'04','maio':'05','junho':'06','julho':'07','agosto':'08','setembro':'09','outubro':'10','novembro':'11','dezembro':'12'};
     let month = monthMap[dateMatch[1].toLowerCase()] || '01';
     parsed.mesAno = `${dateMatch[2]}-${month}`;
   }
-
-  // 6. Extrair Estudantes (Aceitando Aluna, Aluno, Acadêmicos, Acadêmicas e ignorando lixo como "Turma")
-  let acadMatch = rawText.match(/(?:Acad[eê]mic[oa]s?|Alun[oa]s?)[:\s]*([\s\S]*?)(?:Florian[oó]polis|Relat[oó]rio|Turma|$)/i);
-  let students = [];
-  
-  if (acadMatch) {
-    students = acadMatch[1].split('\n')
-      .map(l => l.split('-')[0]) // Quebra no hífen e joga fora a parte do "- Turma"
-      .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim())
-      .filter(l => l.length > 4 && l.includes(' '));
-  } else {
-    students = lines.slice(0, 6)
-      .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l))
-      .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
-  }
-  
-  if (students[0]) parsed.estudante1 = students[0];
-  if (students[1]) parsed.estudante2 = students[1];
-  if (students[2]) parsed.estudante3 = parsed.estudante3 || students[2];
 
   return parsed;
 };
