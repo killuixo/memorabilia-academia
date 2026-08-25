@@ -43,22 +43,35 @@ const parseExtractedText = (rawText) => {
   const fullText = rawText.replace(/\n/g, ' ');
   const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
 
-  // 1. Extrair Centro e Departamento (Geralmente no topo)
+  // 1. Extrair Centro, Departamento e Curso em linhas isoladas
   lines.forEach(line => {
-    if (/CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-    if (/DEPARTAMENTO DE/i.test(line)) parsed.departamento = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/^CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/^DEPARTAMENTO DE/i.test(line)) parsed.departamento = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/^CURSO DE/i.test(line)) parsed.curso = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
   });
 
-  // 2. Extrair Disciplina (Padrão 1: "Disciplina: ..." | Padrão 2: "...estágio de observação, ...")
+  // 2. Extrair Disciplina (Tenta o padrão explícito ou deduz pela linha anterior ao Orientador)
   let discMatch = rawText.match(/Disciplina:?\s*([^\n]+)/i) || fullText.match(/estágio de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
-  if (discMatch) parsed.disciplina = discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  if (discMatch) {
+    parsed.disciplina = discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  } else {
+    let profIndex = lines.findIndex(l => /(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)/i.test(l));
+    if (profIndex > 0) {
+      let lineAbove = lines[profIndex - 1];
+      if (!/DEPARTAMENTO|CENTRO|CURSO/i.test(lineAbove)) {
+         parsed.disciplina = lineAbove.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+      }
+    }
+  }
 
-  // 3. Extrair Curso (Padrão: "...curso de Pedagogia...")
-  let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
-  if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  // 3. Extrair Curso (Caso esteja no meio de um parágrafo em vez de linha isolada)
+  if (!parsed.curso) {
+    let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
+    if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  }
 
-  // 4. Extrair Orientador(a)
-  let oriMatch = rawText.match(/(?:Prof[a-zªº.]*|professora|orientador[a]?[:\s]*)\s*([A-Z][a-zA-ZÀ-ÿ\s]+)/i);
+  // 4. Extrair Orientador(a) (Agora tolerante a Professora: com dois pontos)
+  let oriMatch = rawText.match(/(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*([A-Z][a-zA-ZÀ-ÿ\s]+)/i);
   if (oriMatch) parsed.orientador = oriMatch[1].split('\n')[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
 
   // 5. Extrair Mês e Ano
@@ -69,19 +82,18 @@ const parseExtractedText = (rawText) => {
     parsed.mesAno = `${dateMatch[2]}-${month}`;
   }
 
-  // 6. Extrair Estudantes
-  let acadMatch = rawText.match(/Acad[eê]micos:?\s*([\s\S]*?)(?:Florian[oó]polis|$)/i);
+  // 6. Extrair Estudantes (Aceitando Aluna, Aluno, Acadêmicos e ignorando lixo como "Turma")
+  let acadMatch = rawText.match(/(?:Acad[eê]micos?|Alun[oa]s?)[:\s]*([\s\S]*?)(?:Florian[oó]polis|Relat[oó]rio|Turma|$)/i);
   let students = [];
   
   if (acadMatch) {
-    // Caso 1: Estão listados após a palavra "Acadêmicos:"
     students = acadMatch[1].split('\n')
+      .map(l => l.split('-')[0]) // Quebra no hífen e joga fora a parte do "- Turma"
       .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim())
-      .filter(l => l.length > 5 && l.includes(' ')); // Filtra apenas nomes com sobrenome, ignorando lixo do OCR
+      .filter(l => l.length > 4 && l.includes(' '));
   } else {
-    // Caso 2: Estão soltos no topo da página (Exemplo da foto de Pedagogia)
     students = lines.slice(0, 6)
-      .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l)) // Pega linhas com pelo menos duas palavras em Maiúsculo
+      .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l))
       .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
   
