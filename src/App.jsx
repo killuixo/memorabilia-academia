@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// ==========================================
+// CONFIGURAÇÕES DO APLICATIVO
+// ==========================================
 const getGoogleScriptUrl = () => {
   try {
     return import.meta.env.VITE_GOOGLE_SCRIPT_URL || "";
@@ -7,16 +10,87 @@ const getGoogleScriptUrl = () => {
     return ""; 
   }
 };
-const getGeminiApiKey = () => {
-  try {
-    return import.meta.env.VITE_GEMINI_API_KEY || "";
-  } catch (error) {
-    return "";
-  }
-};
 
 const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
-const GEMINI_API_KEY = getGeminiApiKey();
+
+// ==========================================
+// FUNÇÕES UTILITÁRIAS PARA A CÂMERA (OCR)
+// ==========================================
+const resizeImageForOCR = (file, maxWidth = 1200) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.src = e.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = maxWidth;
+        canvas.height = img.height * (maxWidth / img.width);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png', 1.0)); 
+      };
+      img.onerror = reject;
+    };
+    reader.onerror = reject;
+  });
+};
+
+const parseExtractedText = (rawText) => {
+  let parsed = { centro: '', departamento: '', curso: '', disciplina: '', orientador: '', estudante1: '', estudante2: '', estudante3: '', mesAno: '' };
+  
+  const fullText = rawText.replace(/\n/g, ' ');
+  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+
+  // 1. Extrair Centro e Departamento (Geralmente no topo)
+  lines.forEach(line => {
+    if (/CENTRO DE/i.test(line)) parsed.centro = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+    if (/DEPARTAMENTO DE/i.test(line)) parsed.departamento = line.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+  });
+
+  // 2. Extrair Disciplina (Padrão 1: "Disciplina: ..." | Padrão 2: "...estágio de observação, ...")
+  let discMatch = rawText.match(/Disciplina:?\s*([^\n]+)/i) || fullText.match(/estágio de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
+  if (discMatch) parsed.disciplina = discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+
+  // 3. Extrair Curso (Padrão: "...curso de Pedagogia...")
+  let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+)(?:,|\.)/i);
+  if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+
+  // 4. Extrair Orientador(a)
+  let oriMatch = rawText.match(/(?:Prof[a-zªº.]*|professora|orientador[a]?[:\s]*)\s*([A-Z][a-zA-ZÀ-ÿ\s]+)/i);
+  if (oriMatch) parsed.orientador = oriMatch[1].split('\n')[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+
+  // 5. Extrair Mês e Ano
+  let dateMatch = fullText.match(/([a-zA-Zç]+)\s+de\s+(20\d{2}|19\d{2})/i);
+  if (dateMatch) {
+    const monthMap = { 'janeiro':'01','fevereiro':'02','março':'03','abril':'04','maio':'05','junho':'06','julho':'07','agosto':'08','setembro':'09','outubro':'10','novembro':'11','dezembro':'12'};
+    let month = monthMap[dateMatch[1].toLowerCase()] || '01';
+    parsed.mesAno = `${dateMatch[2]}-${month}`;
+  }
+
+  // 6. Extrair Estudantes
+  let acadMatch = rawText.match(/Acad[eê]micos:?\s*([\s\S]*?)(?:Florian[oó]polis|$)/i);
+  let students = [];
+  
+  if (acadMatch) {
+    // Caso 1: Estão listados após a palavra "Acadêmicos:"
+    students = acadMatch[1].split('\n')
+      .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim())
+      .filter(l => l.length > 5 && l.includes(' ')); // Filtra apenas nomes com sobrenome, ignorando lixo do OCR
+  } else {
+    // Caso 2: Estão soltos no topo da página (Exemplo da foto de Pedagogia)
+    students = lines.slice(0, 6)
+      .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l)) // Pega linhas com pelo menos duas palavras em Maiúsculo
+      .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
+  }
+  
+  if (students[0]) parsed.estudante1 = students[0];
+  if (students[1]) parsed.estudante2 = students[1];
+  if (students[2]) parsed.estudante3 = parsed.estudante3 || students[2];
+
+  return parsed;
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('registro'); 
@@ -34,6 +108,8 @@ export default function App() {
   const [formData, setFormData] = useState(initialFormState);
   const [status, setStatus] = useState('idle');
   const [showConfirm, setShowConfirm] = useState(false);
+  
+  // OCR States
   const [ocrStatus, setOcrStatus] = useState('idle');
   const fileInputRef = useRef(null);
 
@@ -52,10 +128,10 @@ export default function App() {
            setFetchError("Erro: A resposta não é uma lista válida.");
         }
       } catch(e) {
-        setFetchError("Erro: A planilha não retornou JSON válido. Verifique se o script foi implantado como 'Nova Versão'.");
+        setFetchError("Erro de formatação JSON no Script.");
       }
     } catch (err) {
-      setFetchError("Falha de comunicação com o servidor.");
+      setFetchError("Falha de comunicação com a planilha.");
     } finally {
       setLoadingList(false);
     }
@@ -69,10 +145,11 @@ export default function App() {
     if (activeTab === 'acervo') fetchItems();
   }, [activeTab]);
 
+  // Autocomplete e sugestão de ID baseado estritamente no último item da planilha
   useEffect(() => {
     if (items.length === 0) return;
 
-    // LÓGICA SIMPLES E EXATA: Acessar apenas a última linha preenchida.
+    // Pega ESTRITAMENTE a última linha carregada da planilha
     const lastItem = items[items.length - 1]; 
 
     setFormData(prev => {
@@ -81,15 +158,13 @@ export default function App() {
       const autoPacote = lastItem["ID Pacote"] || '';
       if (!prev.pacote && autoPacote) updates.pacote = autoPacote;
 
-      // Se existir o último "ID Item", separa em letras (prefixo) e números (sufixo)
-      // Exemplo: REL-CFH-008. Prefixo: REL-CFH- | Número: 008
+      // Pega o ID Item anterior (ex: "REL-CFH-008") da última linha e transforma em "REL-CFH-009"
       const lastIdItem = lastItem["ID Item"] || '';
       if (lastIdItem && !prev.idItem) {
         const match = lastIdItem.match(/^(.*?)(\d+)$/);
         if (match) {
           const prefix = match[1];
           const numStr = match[2];
-          // Soma 1 ao valor encontrado
           const nextNum = parseInt(numStr, 10) + 1;
           updates.idItem = `${prefix}${String(nextNum).padStart(numStr.length, '0')}`;
         }
@@ -100,107 +175,61 @@ export default function App() {
       }
       return prev;
     });
-
   }, [items]);
+
+  // Extração das listas únicas para o Autocompletar (Datalists)
+  const uniqueCursos = [...new Set(items.map(i => i["Curso"]).filter(Boolean))];
+  const uniqueDisciplinas = [...new Set(items.map(i => i["Disciplina"]).filter(Boolean))];
+  const uniqueOrientadores = [...new Set(items.map(i => i["Orientador"]).filter(Boolean))];
+  const uniqueEstudantes = [...new Set([
+      ...items.map(i => i["Estudante 1"]),
+      ...items.map(i => i["Estudante 2"]),
+      ...items.map(i => i["Estudante 3"])
+  ].filter(Boolean))];
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const resizeImageForAPI = (file, maxWidth = 800) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = (e) => {
-        const img = new Image();
-        img.src = e.target.result;
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          canvas.width = maxWidth;
-          canvas.height = img.height * (maxWidth / img.width);
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          // Reduz o tamanho da imagem enviada para o modelo e agiliza o tempo de resposta
-          resolve(canvas.toDataURL('image/jpeg', 0.6)); 
-        };
-        img.onerror = reject;
-      };
-      reader.onerror = reject;
-    });
-  };
-
   const handleImageCapture = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
-    if (!GEMINI_API_KEY) {
-      setOcrStatus('error_key');
-      setTimeout(() => setOcrStatus('idle'), 4000);
-      return;
-    }
-
     setOcrStatus('loading');
     try {
-      const base64Image = (await resizeImageForAPI(file)).split(',')[1];
-      
-      const promptInstructions = `
-        Aja como um arquivista especializado. Analise a capa deste relatório acadêmico e extraia os dados estritamente no formato JSON.
-        Seja preciso.
-        {
-          "centro": "Nome do Centro acadêmico (ex: CCE, CFH)",
-          "departamento": "Nome do Departamento",
-          "curso": "Nome do Curso",
-          "disciplina": "Nome da Disciplina",
-          "orientador": "Nome do Orientador ou Professora",
-          "estudantes": ["Nome do Aluno 1", "Nome do Aluno 2", "Nome do Aluno 3"],
-          "mesAno": "Formato YYYY-MM (ex: 2002-08)"
-        }
-        Regras: 
-        1. Retorne APENAS o JSON puro. Não inclua formatação markdown como \`\`\`json.
-        2. Alunos e estudantes devem ser colocados estritamente na array 'estudantes'.
-        3. Se algo não estiver na capa, deixe em branco ("").
-      `;
+      // Carrega o Tesseract.js sob demanda (grátis e no navegador)
+      if (!window.Tesseract) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
 
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: promptInstructions },
-              { inlineData: { mimeType: "image/jpeg", data: base64Image } }
-            ]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0.1 // Precisão focada nos dados, sem alucinação
-          }
-        })
-      });
+      const base64Image = await resizeImageForOCR(file);
+      
+      const worker = await window.Tesseract.createWorker('por');
+      const ret = await worker.recognize(base64Image);
+      const text = ret.data.text;
+      await worker.terminate();
 
-      if (!res.ok) throw new Error("Falha na comunicação com a IA");
-      
-      const data = await res.json();
-      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      
-      if (!text) throw new Error("A IA não retornou o conteúdo");
-      
-      // Limpa qualquer vestígio de markdown que possa atrapalhar o JSON
-      text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(text);
+      // Passa o texto para o nosso filtro inteligente
+      const parsedData = parseExtractedText(text);
 
       setFormData(prev => ({
         ...prev,
-        centro: parsed.centro || prev.centro,
-        departamento: parsed.departamento || prev.departamento,
-        curso: parsed.curso || prev.curso,
-        disciplina: parsed.disciplina || prev.disciplina,
-        orientador: parsed.orientador || prev.orientador,
-        mesAno: parsed.mesAno || prev.mesAno,
-        estudante1: parsed.estudantes?.[0] || prev.estudante1,
-        estudante2: parsed.estudantes?.[1] || prev.estudante2,
-        estudante3: parsed.estudantes?.[2] || prev.estudante3,
+        centro: parsedData.centro || prev.centro,
+        departamento: parsedData.departamento || prev.departamento,
+        curso: parsedData.curso || prev.curso,
+        disciplina: parsedData.disciplina || prev.disciplina,
+        orientador: parsedData.orientador || prev.orientador,
+        mesAno: parsedData.mesAno || prev.mesAno,
+        estudante1: parsedData.estudante1 || prev.estudante1,
+        estudante2: parsedData.estudante2 || prev.estudante2,
+        estudante3: parsedData.estudante3 || prev.estudante3,
       }));
 
       setOcrStatus('success');
@@ -228,20 +257,22 @@ export default function App() {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
-        // POST via text/plain evita bloqueio de CORS
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // text/plain para contornar CORS
         body: JSON.stringify(formData)
       });
       
       setStatus('success');
+      
+      // Limpa os dados do formulário, mas mantém o pacote, centro e departamentos para agilizar
       setFormData(prev => ({
         ...initialFormState,
         pacote: prev.pacote,
         centro: prev.centro,
         departamento: prev.departamento,
-        idItem: '' // Limpa o ID e força a rodar o auto-completar inteligente novamente no useEffect
+        idItem: '' // Deixa em branco para o useEffect de ID preencher o próximo número
       }));
-      fetchItems();
+      
+      fetchItems(); // Atualiza o acervo 
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
       setStatus('error');
@@ -291,11 +322,28 @@ export default function App() {
         {activeTab === 'registro' && (
           <div className="flex flex-col bg-white p-6 relative">
             
+            {/* Listas Suspensas Injetadas Ocultas (Datalists) */}
             <datalist id="codigosSiga">
               <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.41 - Histórico escolar. Integralização curricular" />
               <option value="125.42 - Emissão de diploma" />
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
+            </datalist>
+            
+            <datalist id="listaCursos">
+              {uniqueCursos.map((curso, idx) => <option key={idx} value={curso} />)}
+            </datalist>
+            
+            <datalist id="listaDisciplinas">
+              {uniqueDisciplinas.map((disc, idx) => <option key={idx} value={disc} />)}
+            </datalist>
+            
+            <datalist id="listaOrientadores">
+              {uniqueOrientadores.map((ori, idx) => <option key={idx} value={ori} />)}
+            </datalist>
+
+            <datalist id="listaEstudantes">
+              {uniqueEstudantes.map((est, idx) => <option key={idx} value={est} />)}
             </datalist>
 
             {/* BOTÃO CÂMERA DISCRETO */}
@@ -307,19 +355,15 @@ export default function App() {
                 onClick={() => fileInputRef.current.click()}
                 className="flex items-center gap-2 px-3 py-2 bg-white border-[3px] border-black text-black font-black text-xs uppercase hover:bg-gray-100 transition-colors cursor-pointer shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter">
-                  <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
-                  <circle cx="12" cy="13" r="3"/>
-                </svg>
-                {ocrStatus === 'loading' ? 'Lendo...' : 'Ler Capa (IA)'}
+                <span role="img" aria-label="Camera">📷</span>
+                {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa (Câmera)'}
               </button>
 
               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
             </div>
 
-            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black">✓ Documento extraído! Revise as caixas.</div>}
-            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white">⚠ Erro ao contatar a inteligência artificial. Tente novamente.</div>}
-            {ocrStatus === 'error_key' && <div className="mb-6 p-3 bg-[#ffb300] border-[3px] border-black font-black text-sm uppercase text-black">⚠ Chave API Gemini não inserida. Configure a VITE_GEMINI_API_KEY no Vercel.</div>}
+            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">✓ Campos preenchidos! Por favor, revise.</div>}
+            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">⚠ Erro ao processar a imagem. Tente novamente ou preencha manualmente.</div>}
 
             {showConfirm ? (
               <div className="flex flex-col gap-6 animate-in fade-in duration-300">
@@ -332,6 +376,7 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Curso:</strong> <br/>{formData.curso || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.disciplina || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
                 </div>
@@ -345,22 +390,22 @@ export default function App() {
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">ID Pacote</label>
+                    <label className="font-black text-black uppercase tracking-wide">ID Pacote *</label>
                     <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID Item</label>
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID Item *</label>
                     <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Centro</label>
+                    <label className="font-black text-black uppercase tracking-wide">Centro *</label>
                     <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Departamento</label>
+                    <label className="font-black text-black uppercase tracking-wide">Departamento *</label>
                     <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
@@ -369,38 +414,38 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-2">
                     <div className="flex flex-col gap-2">
                       <label className="font-black text-black uppercase tracking-wide text-xs">Curso</label>
-                      <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <input type="text" list="listaCursos" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
                       <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina</label>
-                      <input type="text" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <input type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
                   
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a)</label>
-                    <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1</label>
-                      <input required type="text" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1 *</label>
+                      <input required type="text" list="listaEstudantes" name="estudante1" value={formData.estudante1} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2 (Opcional)</label>
-                      <input type="text" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2</label>
+                      <input type="text" list="listaEstudantes" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3 (Opcional)</label>
-                      <input type="text" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3</label>
+                      <input type="text" list="listaEstudantes" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Mês e Ano</label>
+                    <label className="font-black text-black uppercase tracking-wide">Mês e Ano *</label>
                     <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
@@ -408,20 +453,20 @@ export default function App() {
                     <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Selecione na lista suspensa..." />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações (Opcional)</label>
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações</label>
                     <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
                 <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-1 disabled:translate-x-1">
-                  {status === 'loading' ? 'Enviando...' : 'Revisar Informações'}
+                  {status === 'loading' ? 'Verificando...' : 'Revisar Informações'}
                 </button>
-                {status === 'success' && <div className="bg-[#00bcd4] border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Salvo na Planilha!</p></div>}
               </form>
             )}
           </div>
         )}
 
+        {/* Aba do Acervo para Listagem */}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
             {fetchError && (
