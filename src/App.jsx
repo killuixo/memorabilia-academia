@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Mantido estritamente seguro: Lendo a variável direto da Vercel.
 const getGoogleScriptUrl = () => {
   try {
     return import.meta.env.VITE_GOOGLE_SCRIPT_URL || "";
@@ -8,7 +7,16 @@ const getGoogleScriptUrl = () => {
     return ""; 
   }
 };
+const getGeminiApiKey = () => {
+  try {
+    return import.meta.env.VITE_GEMINI_API_KEY || "";
+  } catch (error) {
+    return "";
+  }
+};
+
 const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
+const GEMINI_API_KEY = getGeminiApiKey();
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('registro'); 
@@ -64,7 +72,8 @@ export default function App() {
   useEffect(() => {
     if (items.length === 0) return;
 
-    const lastItem = items[items.length - 1]; // Pega exatamente a última linha da planilha
+    // LÓGICA SIMPLES E EXATA: Acessar apenas a última linha preenchida.
+    const lastItem = items[items.length - 1]; 
 
     setFormData(prev => {
       let updates = {};
@@ -72,13 +81,15 @@ export default function App() {
       const autoPacote = lastItem["ID Pacote"] || '';
       if (!prev.pacote && autoPacote) updates.pacote = autoPacote;
 
-      // LÓGICA DO ID ITEM SIMPLIFICADA: Olha pro último gerado na lista (ex: REL-LLV-101) e faz +1 (REL-LLV-102)
+      // Se existir o último "ID Item", separa em letras (prefixo) e números (sufixo)
+      // Exemplo: REL-CFH-008. Prefixo: REL-CFH- | Número: 008
       const lastIdItem = lastItem["ID Item"] || '';
-      if (lastIdItem && (!prev.idItem || prev.idItem === lastIdItem)) {
-        const match = lastIdItem.match(/^(.*-)(\d+)$/);
+      if (lastIdItem && !prev.idItem) {
+        const match = lastIdItem.match(/^(.*?)(\d+)$/);
         if (match) {
           const prefix = match[1];
           const numStr = match[2];
+          // Soma 1 ao valor encontrado
           const nextNum = parseInt(numStr, 10) + 1;
           updates.idItem = `${prefix}${String(nextNum).padStart(numStr.length, '0')}`;
         }
@@ -97,116 +108,88 @@ export default function App() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const loadTesseract = () => {
+  const resizeImageForAPI = (file, maxWidth = 800) => {
     return new Promise((resolve, reject) => {
-      if (window.Tesseract) return resolve(window.Tesseract);
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-      script.onload = () => resolve(window.Tesseract);
-      script.onerror = reject;
-      document.head.appendChild(script);
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (e) => {
+        const img = new Image();
+        img.src = e.target.result;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = maxWidth;
+          canvas.height = img.height * (maxWidth / img.width);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          // Reduz o tamanho da imagem enviada para o modelo e agiliza o tempo de resposta
+          resolve(canvas.toDataURL('image/jpeg', 0.6)); 
+        };
+        img.onerror = reject;
+      };
+      reader.onerror = reject;
     });
-  };
-
-  const parseOCR = (text) => {
-    // 1. Limpeza drástica para erros comuns do Tesseract (remove pontuações que geram lixo)
-    const lines = text.split('\n')
-      .map(l => l.trim().replace(/[*|/\\_\[\]{}():;]/g, ' ')) 
-      .filter(l => l.replace(/[^a-zA-Z]/g, '').length > 3); // Ignora linhas que não tem pelo menos 3 letras
-
-    const fullText = lines.join(' '); 
-    let parsed = { centro: '', departamento: '', curso: '', disciplina: '', orientador: '', mesAno: '', estudantes: [] };
-
-    /* 1. MÊS/ANO: Localiza mês seguido de ano */
-    const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', março:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
-    const dateMatch = fullText.match(/(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de)?\s*(19\d{2}|20\d{2})/i);
-    if (dateMatch) {
-      parsed.mesAno = `${dateMatch[2]}-${monthMap[dateMatch[1].toLowerCase()]}`;
-    }
-
-    /* 2. CURSO: Ex: "...curso de Pedagogia, da Universidade..." */
-    const cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:da universidade|sob a|florian)/i);
-    if (cursoMatch) parsed.curso = cursoMatch[1].trim();
-
-    /* 3. DISCIPLINA: Ex: "estágio de observação" ou "Disciplina Prática de Ensino..." */
-    const discMatch1 = fullText.match(/disciplina\s*([a-zA-ZÀ-ÿ\sI]+?)(?:prof|acad|alun|florian)/i);
-    const discMatch2 = fullText.match(/estágio de\s+([a-zA-ZÀ-ÿ\s]+?)(?:proposto|no curso)/i);
-    if (discMatch1) parsed.disciplina = discMatch1[1].trim();
-    else if (discMatch2) parsed.disciplina = "Estágio de " + discMatch2[1].trim();
-
-    /* 4. ORIENTADOR: Ex: "...orientação da professora Alice..." ou "Profª Maria Izabel..." */
-    const oriMatch1 = fullText.match(/orientação d[ao] professor[a]?\s+([a-zA-ZÀ-ÿ\s]+)/i);
-    const oriMatch2 = fullText.match(/prof[a-zA-ZÀ-ÿ\s]*\s+([A-Z][a-zA-ZÀ-ÿ\s]+?)(?:acad|alun|florian|$)/i);
-    if (oriMatch1) parsed.orientador = oriMatch1[1].trim();
-    else if (oriMatch2) parsed.orientador = oriMatch2[1].trim();
-
-    /* 5. CENTRO / DEPTO: Fallbacks estatísticos */
-    if (fullText.match(/cce|comunica[çc][ãa]o e express[ãa]o/i)) parsed.centro = 'CCE';
-    if (fullText.match(/cfh|filosofia e hist[óo]ria/i)) parsed.centro = 'CFH';
-    if (fullText.match(/ced|ci[êe]ncias da educa[çc][ãa]o/i)) parsed.centro = 'CED';
-    if (fullText.match(/men|metodologia de ensino/i)) parsed.departamento = 'MEN';
-    if (fullText.match(/llv|vern[áa]culas/i)) parsed.departamento = 'LLV';
-
-    /* 6. ESTUDANTES: Limpeza anti-lixo e extração inteligente */
-    let captureStudents = false;
-    let foundExplicit = false;
-    
-    for (let i = 0; i < lines.length; i++) {
-      const lowerLine = lines[i].toLowerCase();
-      
-      // Gatilho para a Capa 1 (Acadêmicos) - tolerando erros de OCR como "Academlcos"
-      if (lowerLine.match(/acad[eêëc]micos|alunos/)) {
-          captureStudents = true;
-          foundExplicit = true;
-          let inlineName = lines[i].replace(/.*?(acad[eêëc]micos|alunos)/i, '').trim();
-          inlineName = inlineName.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim(); // Remove totalmente lixo de OCR
-          if (inlineName.length > 5 && inlineName.includes(' ')) parsed.estudantes.push(inlineName);
-          continue;
-      }
-      
-      if (captureStudents) {
-          // Para de ler nomes se bater na cidade ou datas
-          if (lowerLine.match(/florian[óo]polis|janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro/)) {
-            break;
-          }
-          let cleanName = lines[i].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-          
-          // Validação Estrita Anti-Lixo: O nome lido deve ter >5 letras, ter um espaço (nome e sobrenome) e não ser uma palavra-chave
-          if (parsed.estudantes.length < 3 && cleanName.length > 5 && cleanName.includes(' ') && !cleanName.match(/relat[óo]rio|disciplina|prof/i)) {
-            parsed.estudantes.push(cleanName);
-          }
-      }
-    }
-
-    // Capa 2: Se não achou palavra-chave explícita, lê os nomes do topo do documento
-    if (!foundExplicit && parsed.estudantes.length === 0) {
-      for (let i = 0; i < Math.min(6, lines.length); i++) {
-        let line = lines[i].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-        // Ignora cabeçalhos institucionais e títulos
-        if (line.match(/universidade|centro|departamento|minist[ée]rio|curso|relat[óo]rio|recortes|cotidiano/i)) continue;
-        
-        // Validação Estrita Anti-Lixo para o topo
-        if (line.length > 5 && line.length < 45 && line.includes(' ')) {
-          parsed.estudantes.push(line);
-          if(parsed.estudantes.length >= 3) break;
-        }
-      }
-    }
-
-    return parsed;
   };
 
   const handleImageCapture = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    if (!GEMINI_API_KEY) {
+      setOcrStatus('error_key');
+      setTimeout(() => setOcrStatus('idle'), 4000);
+      return;
+    }
+
     setOcrStatus('loading');
     try {
-      const Tesseract = await loadTesseract();
-      const result = await Tesseract.recognize(file, 'por');
+      const base64Image = (await resizeImageForAPI(file)).split(',')[1];
       
-      const parsed = parseOCR(result.data.text);
+      const promptInstructions = `
+        Aja como um arquivista especializado. Analise a capa deste relatório acadêmico e extraia os dados estritamente no formato JSON.
+        Seja preciso.
+        {
+          "centro": "Nome do Centro acadêmico (ex: CCE, CFH)",
+          "departamento": "Nome do Departamento",
+          "curso": "Nome do Curso",
+          "disciplina": "Nome da Disciplina",
+          "orientador": "Nome do Orientador ou Professora",
+          "estudantes": ["Nome do Aluno 1", "Nome do Aluno 2", "Nome do Aluno 3"],
+          "mesAno": "Formato YYYY-MM (ex: 2002-08)"
+        }
+        Regras: 
+        1. Retorne APENAS o JSON puro. Não inclua formatação markdown como \`\`\`json.
+        2. Alunos e estudantes devem ser colocados estritamente na array 'estudantes'.
+        3. Se algo não estiver na capa, deixe em branco ("").
+      `;
+
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: promptInstructions },
+              { inlineData: { mimeType: "image/jpeg", data: base64Image } }
+            ]
+          }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.1 // Precisão focada nos dados, sem alucinação
+          }
+        })
+      });
+
+      if (!res.ok) throw new Error("Falha na comunicação com a IA");
       
+      const data = await res.json();
+      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (!text) throw new Error("A IA não retornou o conteúdo");
+      
+      // Limpa qualquer vestígio de markdown que possa atrapalhar o JSON
+      text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(text);
+
       setFormData(prev => ({
         ...prev,
         centro: parsed.centro || prev.centro,
@@ -215,14 +198,16 @@ export default function App() {
         disciplina: parsed.disciplina || prev.disciplina,
         orientador: parsed.orientador || prev.orientador,
         mesAno: parsed.mesAno || prev.mesAno,
-        estudante1: parsed.estudantes[0] || prev.estudante1,
-        estudante2: parsed.estudantes[1] || prev.estudante2,
-        estudante3: parsed.estudantes[2] || prev.estudante3,
+        estudante1: parsed.estudantes?.[0] || prev.estudante1,
+        estudante2: parsed.estudantes?.[1] || prev.estudante2,
+        estudante3: parsed.estudantes?.[2] || prev.estudante3,
       }));
-      
+
       setOcrStatus('success');
       setTimeout(() => setOcrStatus('idle'), 3000);
+      
     } catch (err) {
+      console.error(err);
       setOcrStatus('error');
       setTimeout(() => setOcrStatus('idle'), 4000);
     }
@@ -243,7 +228,7 @@ export default function App() {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
-        // POST via text/plain evita bloqueio de CORS do Google
+        // POST via text/plain evita bloqueio de CORS
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(formData)
       });
@@ -254,7 +239,7 @@ export default function App() {
         pacote: prev.pacote,
         centro: prev.centro,
         departamento: prev.departamento,
-        idItem: prev.idItem // Segura para o useEffect calcular o próximo automaticamente
+        idItem: '' // Limpa o ID e força a rodar o auto-completar inteligente novamente no useEffect
       }));
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
@@ -306,7 +291,6 @@ export default function App() {
         {activeTab === 'registro' && (
           <div className="flex flex-col bg-white p-6 relative">
             
-            {/* Datalist restaurada para Códigos IFES */}
             <datalist id="codigosSiga">
               <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.41 - Histórico escolar. Integralização curricular" />
@@ -314,22 +298,28 @@ export default function App() {
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
             </datalist>
 
-            {/* BOTÃO CÂMERA DISCRETO ACIMA DO FORMULÁRIO */}
+            {/* BOTÃO CÂMERA DISCRETO */}
             <div className="flex justify-between items-center mb-6 border-b-[4px] border-black pb-4">
               <span className="font-black text-gray-400 uppercase tracking-widest text-sm">Ficha de Inserção</span>
+              
               <button 
                 type="button"
                 onClick={() => fileInputRef.current.click()}
-                className="flex items-center gap-2 px-3 py-1 bg-black text-white font-bold text-sm uppercase hover:bg-gray-800 transition-colors cursor-pointer"
+                className="flex items-center gap-2 px-3 py-2 bg-white border-[3px] border-black text-black font-black text-xs uppercase hover:bg-gray-100 transition-colors cursor-pointer shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none"
               >
-                <span>📷</span>
-                {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa'}
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="square" strokeLinejoin="miter">
+                  <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+                  <circle cx="12" cy="13" r="3"/>
+                </svg>
+                {ocrStatus === 'loading' ? 'Lendo...' : 'Ler Capa (IA)'}
               </button>
+
               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
             </div>
 
-            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black">✓ Informações capturadas com sucesso!</div>}
-            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white">⚠ Não foi possível ler a imagem com clareza. Tente novamente.</div>}
+            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black">✓ Documento extraído! Revise as caixas.</div>}
+            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white">⚠ Erro ao contatar a inteligência artificial. Tente novamente.</div>}
+            {ocrStatus === 'error_key' && <div className="mb-6 p-3 bg-[#ffb300] border-[3px] border-black font-black text-sm uppercase text-black">⚠ Chave API Gemini não inserida. Configure a VITE_GEMINI_API_KEY no Vercel.</div>}
 
             {showConfirm ? (
               <div className="flex flex-col gap-6 animate-in fade-in duration-300">
@@ -346,8 +336,8 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-4">
-                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Salvar na Planilha</button>
-                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Voltar</button>
+                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Salvar na Planilha</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Voltar</button>
                 </div>
               </div>
             ) : (
@@ -378,17 +368,17 @@ export default function App() {
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-2">
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-xs">Curso (Opcional)</label>
+                      <label className="font-black text-black uppercase tracking-wide text-xs">Curso</label>
                       <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina (Opcional)</label>
+                      <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina</label>
                       <input type="text" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
                   
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) (Opcional)</label>
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a)</label>
                     <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
 
@@ -414,8 +404,8 @@ export default function App() {
                     <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código SIGA / IFES (Lista Suspensa)</label>
-                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código SIGA / IFES</label>
+                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Selecione na lista suspensa..." />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações (Opcional)</label>
@@ -423,7 +413,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] disabled:opacity-50">
+                <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-1 disabled:translate-x-1">
                   {status === 'loading' ? 'Enviando...' : 'Revisar Informações'}
                 </button>
                 {status === 'success' && <div className="bg-[#00bcd4] border-[6px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"><p className="text-black font-black text-center text-xl uppercase">✓ Salvo na Planilha!</p></div>}
