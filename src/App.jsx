@@ -37,6 +37,13 @@ const resizeImageForOCR = (file, maxWidth = 1200) => {
   });
 };
 
+const toTitleCase = (str) => {
+  if (!str) return '';
+  return str.toLowerCase().replace(/(?:^|\s)\S/g, (a) => a.toUpperCase())
+            .replace(/\b(De|Do|Da|Dos|Das|E)\b/g, (a) => a.toLowerCase())
+            .replace(/\b(Ii|Iii|Iv|Vi|Vii|Viii|Ix|Xi)\b/g, (a) => a.toUpperCase()); // Preserva numerais romanos
+};
+
 const parseExtractedText = (rawText) => {
   let parsed = { centro: '', curso: '', disciplina: '', orientador: '', estudante1: '', estudante2: '', estudante3: '', mesAno: '' };
   
@@ -71,65 +78,76 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 2. Curso (Tolerante a "CURSO LETRAS" sem o "DE")
+  // 2. Curso 
   let cursoLine = lines.find(l => /^CURSO\b/i.test(l));
   if (cursoLine) {
      let textCurso = cursoLine.replace(/^CURSO(?: DE)?\s*/i, '');
      textCurso = textCurso.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
-     textCurso = textCurso.replace(/(?:-|–|—)\s*[A-Z0-9]+\s*$/, ''); // Remove códigos no fim
-     parsed.curso = textCurso.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+     textCurso = textCurso.replace(/(?:-|–|—)\s*[A-Z0-9]+\s*$/, '');
+     parsed.curso = toTitleCase(textCurso.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
   } else {
-     let cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
-     if (cursoMatch) parsed.curso = cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+     // Pesca o curso dentro de um parágrafo
+     let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
+     if (cursoMatch) parsed.curso = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
   }
 
   // 3. Disciplina
   let discLine = lines.find(l => /^DISCIPLINA/i.test(l));
   if (discLine) {
      let textDisc = discLine.replace(/^DISCIPLINA[:\s]*/i, '');
-     textDisc = textDisc.replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, ''); // Remove códigos como MEN5238
-     parsed.disciplina = textDisc.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
+     textDisc = textDisc.replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, '');
+     parsed.disciplina = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
   } else {
-     let profIndex = lines.findIndex(l => /(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)/i.test(l));
-     if (profIndex > 0) {
-        let lineAbove = lines[profIndex - 1];
-        if (!/DEPARTAMENTO|CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
-           parsed.disciplina = lineAbove.replace(/[^a-zA-ZÀ-ÿ\s-]/g, '').trim();
-        }
+     // Pesca a disciplina dentro de um parágrafo
+     let discMatch = fullText.match(/disciplina\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/IV]+?)(?:,|\.|\s+do curso|\s+da universidade|$)/i);
+     if (discMatch) {
+         parsed.disciplina = toTitleCase(discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/IV]/gi, '').trim());
+     } else {
+         let profIndex = lines.findIndex(l => /(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)/i.test(l));
+         if (profIndex > 0) {
+            let lineAbove = lines[profIndex - 1];
+            if (!/CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
+               parsed.disciplina = toTitleCase(lineAbove.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+            }
+         }
      }
   }
 
-  // 4. Orientador(a) (Ignora títulos como Mst, Dra, etc.)
+  // 4. Orientador(a)
   let profLine = lines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
   if (profLine) {
       let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '');
-      profText = profText.replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, ''); // Corta títulos secundários
-      parsed.orientador = profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+      profText = profText.replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, '');
+      parsed.orientador = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
-  // 5. Estudantes (Usa a quebra de linha real para não invadir o título do trabalho)
+  // 5. Estudantes 
   let rawStudentIndex = rawLines.findIndex(l => /^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)\b/i.test(l));
   let students = [];
   if (rawStudentIndex !== -1) {
       let firstStudentLine = rawLines[rawStudentIndex].replace(/^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)[:\s]*/i, '');
       firstStudentLine = firstStudentLine.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-      if (firstStudentLine.includes(' ') && firstStudentLine.length > 5) students.push(firstStudentLine);
+      if (firstStudentLine.includes(' ') && firstStudentLine.length > 5) students.push(toTitleCase(firstStudentLine));
       
-      // Checa as próximas duas linhas, parando IMEDIATAMENTE se houver uma linha em branco
       for (let i = rawStudentIndex + 1; i <= rawStudentIndex + 2 && i < rawLines.length; i++) {
-          if (rawLines[i].length <= 2) break; // A LINHA EM BRANCO SALVA O TÍTULO DE VIRAR ALUNO
+          if (rawLines[i].length <= 2) break; 
           let cleaned = rawLines[i].split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-          if (cleaned.includes(' ') && cleaned.length > 5) {
-              students.push(cleaned);
+          if (cleaned.includes(' ') && cleaned.length > 5 && !/["“”:]/.test(rawLines[i])) {
+              students.push(toTitleCase(cleaned));
           } else {
               break;
           }
       }
   } else {
-      // Fallback
-      students = lines.slice(0, 6)
-        .filter(l => /^[A-Z][a-zÀ-ÿ]+\s+[A-Z][a-zÀ-ÿ]+/.test(l))
-        .map(l => l.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
+      // Fallback: Busca nomes soltos no topo da página (antes de títulos e dados acadêmicos)
+      let topLines = lines.slice(0, 5).filter(l => !/UNIVERSIDADE|FEDERAL|CENTRO|CURSO|DISCIPLINA|TRABALHO|RELATÓRIO|"/i.test(l));
+      for (let l of topLines) {
+          let cleaned = l.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+          // Um nome costuma ter espaços, tamanho razoável e não ter aspas (o que descarta o título do trabalho)
+          if (cleaned.includes(' ') && cleaned.length > 5 && cleaned.length < 50 && !/["“”:]/.test(l)) {
+              students.push(toTitleCase(cleaned));
+          }
+      }
   }
   
   if (students[0]) parsed.estudante1 = students[0];
@@ -142,6 +160,12 @@ const parseExtractedText = (rawText) => {
     const monthMap = { 'janeiro':'01','fevereiro':'02','março':'03','abril':'04','maio':'05','junho':'06','julho':'07','agosto':'08','setembro':'09','outubro':'10','novembro':'11','dezembro':'12'};
     let month = monthMap[dateMatch[1].toLowerCase()] || '01';
     parsed.mesAno = `${dateMatch[2]}-${month}`;
+  } else {
+     // Fallback: Procura apenas um ano solto no final (ex: "Florianópolis 2010") - Registra como Janeiro por padrão.
+     let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
+     if (yearMatch) {
+        parsed.mesAno = `${yearMatch[yearMatch.length - 1]}-01`;
+     }
   }
 
   return parsed;
