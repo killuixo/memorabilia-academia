@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// Mantido estritamente seguro: Lendo a variável direto da Vercel.
 const getGoogleScriptUrl = () => {
   try {
     return import.meta.env.VITE_GOOGLE_SCRIPT_URL || "";
@@ -19,7 +20,7 @@ export default function App() {
   const initialFormState = {
     pacote: '', idItem: '', centro: '', departamento: '',
     estudante1: '', estudante2: '', estudante3: '', orientador: '',
-    curso: '', mesAno: '', codigo: '', observacoes: ''
+    disciplina: '', curso: '', mesAno: '', codigo: '', observacoes: ''
   };
 
   const [formData, setFormData] = useState(initialFormState);
@@ -43,7 +44,7 @@ export default function App() {
            setFetchError("Erro: A resposta não é uma lista válida.");
         }
       } catch(e) {
-        setFetchError("Erro: A planilha não retornou JSON válido.");
+        setFetchError("Erro: A planilha não retornou JSON válido. Verifique se o script foi implantado como 'Nova Versão'.");
       }
     } catch (err) {
       setFetchError("Falha de comunicação com o servidor.");
@@ -63,25 +64,23 @@ export default function App() {
   useEffect(() => {
     if (items.length === 0) return;
 
-    const lastItem = items[items.length - 1]; // Pega a última linha inserida na planilha
+    const lastItem = items[items.length - 1]; // Pega exatamente a última linha da planilha
 
     setFormData(prev => {
       let updates = {};
 
-      // Mantém a sugestão do último ID Pacote
       const autoPacote = lastItem["ID Pacote"] || '';
       if (!prev.pacote && autoPacote) updates.pacote = autoPacote;
 
-      // LÓGICA DO ID ITEM: Pega o último exato (ex: REL-CFH-008) e soma +1 (REL-CFH-009)
+      // LÓGICA DO ID ITEM SIMPLIFICADA: Olha pro último gerado na lista (ex: REL-LLV-101) e faz +1 (REL-LLV-102)
       const lastIdItem = lastItem["ID Item"] || '';
       if (lastIdItem && (!prev.idItem || prev.idItem === lastIdItem)) {
-        // Separa o texto/hífen dos números finais
         const match = lastIdItem.match(/^(.*-)(\d+)$/);
         if (match) {
-          const prefix = match[1]; // Ex: "REL-CFH-"
-          const numStr = match[2]; // Ex: "008"
-          const nextNum = parseInt(numStr, 10) + 1; // 9
-          updates.idItem = `${prefix}${String(nextNum).padStart(numStr.length, '0')}`; // "REL-CFH-009"
+          const prefix = match[1];
+          const numStr = match[2];
+          const nextNum = parseInt(numStr, 10) + 1;
+          updates.idItem = `${prefix}${String(nextNum).padStart(numStr.length, '0')}`;
         }
       }
 
@@ -111,58 +110,71 @@ export default function App() {
 
   const parseOCR = (text) => {
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    let parsed = { centro: '', departamento: '', curso: '', orientador: '', mesAno: '', estudantes: [] };
+    const fullText = lines.join(' '); 
+    let parsed = { centro: '', departamento: '', curso: '', disciplina: '', orientador: '', mesAno: '', estudantes: [] };
+
+    /* 1. MÊS/ANO: Localiza qualquer menção a mês seguido de ano de 1900 a 2099 */
+    const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', março:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
+    const dateMatch = fullText.match(/(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/i);
+    if (dateMatch) {
+      parsed.mesAno = `${dateMatch[2]}-${monthMap[dateMatch[1].toLowerCase()]}`;
+    }
+
+    /* 2. CURSO: Ex: "...curso de Pedagogia, da Universidade..." */
+    const cursoMatch = fullText.match(/curso de\s+([^,.\n]+)/i);
+    if (cursoMatch) parsed.curso = cursoMatch[1].trim();
+
+    /* 3. DISCIPLINA: Ex: "estágio de observação" ou "Disciplina: Prática de Ensino..." */
+    const discMatch1 = fullText.match(/disciplina:\s*([^,.\n]+)/i);
+    const discMatch2 = fullText.match(/estágio de\s+([^,.\n]+)/i);
+    if (discMatch1) parsed.disciplina = discMatch1[1].trim();
+    else if (discMatch2) parsed.disciplina = "Estágio de " + discMatch2[1].trim();
+
+    /* 4. ORIENTADOR: Ex: "...orientação da professora Alice..." ou "Profª Maria Izabel..." */
+    const oriMatch1 = fullText.match(/orientação d[ao] professor[a]?\s+([^,.\n]+)/i);
+    const oriMatch2 = fullText.match(/prof[ªa-z.\s]*:\s*([^,.\n]+)/i);
+    if (oriMatch1) parsed.orientador = oriMatch1[1].trim();
+    else if (oriMatch2) parsed.orientador = oriMatch2[1].trim();
+
+    /* 5. CENTRO / DEPTO: Fallbacks estatísticos */
+    if (fullText.match(/cce|comunica[çc][ãa]o e express[ãa]o/i)) parsed.centro = 'CCE';
+    if (fullText.match(/cfh|filosofia e hist[óo]ria/i)) parsed.centro = 'CFH';
+    if (fullText.match(/ced|ci[êe]ncias da educa[çc][ãa]o/i)) parsed.centro = 'CED';
+    if (fullText.match(/men|metodologia de ensino/i)) parsed.departamento = 'MEN';
+    if (fullText.match(/llv|vern[áa]culas/i)) parsed.departamento = 'LLV';
+
+    /* 6. ESTUDANTES: Lê explicitamente "Acadêmicos:" ou adivinha nomes soltos no topo do arquivo (Capa 2) */
     let captureStudents = false;
-
+    let foundExplicit = false;
     for (let i = 0; i < lines.length; i++) {
-      const originalLine = lines[i];
-      const lowerLine = originalLine.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, "");
-
-      // Centro e Depto básicos
-      if (!parsed.centro && (lowerLine.includes('cce') || lowerLine.includes('comunicacao e expressao'))) parsed.centro = 'CCE';
-      if (!parsed.centro && (lowerLine.includes('cfh') || lowerLine.includes('filosofia e historia'))) parsed.centro = 'CFH';
-      if (!parsed.departamento && (lowerLine.includes('llv') || lowerLine.includes('vernaculas'))) parsed.departamento = 'LLV';
-      if (!parsed.departamento && (lowerLine.includes('men') || lowerLine.includes('metodologia de ensino'))) parsed.departamento = 'MEN';
-      
-      // Disciplina
-      if (!parsed.curso && lowerLine.includes('disciplina:')) {
-        parsed.curso = originalLine.replace(/.*?disciplina:\s*/i, '').trim();
+      const lowerLine = lines[i].toLowerCase();
+      // Capa 1: Acha a palavra-chave
+      if (lowerLine.match(/acad[êe]micos:|alunos:/)) {
+          captureStudents = true;
+          foundExplicit = true;
+          let inlineName = lines[i].replace(/.*?(acad[êe]micos|alunos)\s*[:\-]?\s*/i, '').trim();
+          if (inlineName.length > 3) parsed.estudantes.push(inlineName);
+          continue;
       }
-      
-      // Orientador / Professor
-      if (!parsed.orientador && (lowerLine.match(/prof(a|essor|essora|ª|\.)?:/i) || lowerLine.includes('orientador'))) {
-        parsed.orientador = originalLine.replace(/.*?(prof(a|essor|essora|ª|\.)?|orientador(a)?)\s*[:\-]?\s*/i, '').replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim();
-        continue;
+      if (captureStudents) {
+          // Para de ler nomes se bater na cidade ou datas
+          if (lowerLine.match(/florian[óo]polis|janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro/)) {
+            captureStudents = false; break;
+          }
+          if (parsed.estudantes.length < 3 && lines[i].length > 4 && !lines[i].match(/relat[óo]rio|disciplina|prof/i)) {
+            parsed.estudantes.push(lines[i].replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim());
+          }
       }
+    }
 
-      // Acadêmicos (Inicia a captura das próximas linhas)
-      if (lowerLine.includes('academicos:') || lowerLine.includes('alunos:')) {
-         captureStudents = true;
-         let inlineName = originalLine.replace(/.*?(academicos|alunos)\s*[:\-]?\s*/i, '').trim();
-         if (inlineName.length > 3) parsed.estudantes.push(inlineName);
-         continue;
-      }
-
-      // Parar captura se achar Cidade ou Mês
-      const matchDate = lowerLine.match(/(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/);
-      if (matchDate) {
-        captureStudents = false;
-        const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
-        parsed.mesAno = `${matchDate[2]}-${monthMap[matchDate[1]]}`;
-        continue;
-      }
-
-      if (lowerLine.includes('florianopolis')) {
-         captureStudents = false;
-         continue;
-      }
-
-      // Captura Estudante 2 e Estudante 3 nas linhas debaixo de Acadêmicos
-      if (captureStudents && parsed.estudantes.length < 3) {
-         let nome = originalLine.replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim(); 
-         if (nome.length > 4 && !nome.includes('"')) {
-             parsed.estudantes.push(nome);
-         }
+    // Capa 2: Se não achou "Acadêmicos:", pressupõe que as primeiras 3 linhas do topo são nomes
+    if (!foundExplicit && parsed.estudantes.length === 0) {
+      for (let i = 0; i < Math.min(4, lines.length); i++) {
+        const line = lines[i];
+        if (line.match(/universidade|centro|departamento|ministério|curso|relatório/i)) continue;
+        if (line.length > 5 && line.length < 45) {
+          parsed.estudantes.push(line.trim());
+        }
       }
     }
 
@@ -185,6 +197,7 @@ export default function App() {
         centro: parsed.centro || prev.centro,
         departamento: parsed.departamento || prev.departamento,
         curso: parsed.curso || prev.curso,
+        disciplina: parsed.disciplina || prev.disciplina,
         orientador: parsed.orientador || prev.orientador,
         mesAno: parsed.mesAno || prev.mesAno,
         estudante1: parsed.estudantes[0] || prev.estudante1,
@@ -193,7 +206,7 @@ export default function App() {
       }));
       
       setOcrStatus('success');
-      setTimeout(() => setOcrStatus('idle'), 4000);
+      setTimeout(() => setOcrStatus('idle'), 3000);
     } catch (err) {
       setOcrStatus('error');
       setTimeout(() => setOcrStatus('idle'), 4000);
@@ -215,7 +228,7 @@ export default function App() {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: 'POST',
-        mode: 'no-cors',
+        // POST via text/plain evita bloqueio de CORS do Google
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(formData)
       });
@@ -226,7 +239,7 @@ export default function App() {
         pacote: prev.pacote,
         centro: prev.centro,
         departamento: prev.departamento,
-        idItem: prev.idItem 
+        idItem: prev.idItem // Segura para o useEffect calcular o próximo automaticamente
       }));
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
@@ -252,23 +265,23 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
-      <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] md:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] flex flex-col">
+      <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
         <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
-          <div className="bg-[#c2185b] flex-1 p-6 md:p-8 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
+          <div className="bg-[#c2185b] flex-1 p-6 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
             <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
-            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem de Relatórios de Estágio</p>
+            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem Arquivística de Relatórios</p>
           </div>
           <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
               onClick={() => setActiveTab('registro')}
-              className={`flex-1 px-4 md:px-8 py-4 font-black uppercase tracking-wider text-sm md:text-xl border-b-[8px] md:border-b-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 py-4 font-black uppercase tracking-wider text-sm md:text-xl border-b-[8px] md:border-b-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Registrar
             </button>
             <button 
               onClick={() => setActiveTab('acervo')}
-              className={`flex-1 px-4 md:px-8 py-4 font-black uppercase tracking-wider text-sm md:text-xl transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 py-4 font-black uppercase tracking-wider text-sm md:text-xl transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Ver Acervo
             </button>
@@ -276,22 +289,9 @@ export default function App() {
         </div>
 
         {activeTab === 'registro' && (
-          <div className="flex flex-col bg-white p-6 md:p-10 relative">
-
-            {}
-            <div className="flex justify-end mb-4">
-               <button 
-                 type="button"
-                 onClick={() => fileInputRef.current.click()}
-                 className="flex items-center gap-2 px-4 py-2 bg-black text-white font-bold text-sm uppercase tracking-wider hover:bg-gray-800 transition-colors rounded-sm"
-               >
-                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path><circle cx="12" cy="13" r="4"></circle></svg>
-                 {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa'}
-               </button>
-               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
-            </div>
-
-            {/* Datalist para Códigos IFES */}
+          <div className="flex flex-col bg-white p-6 relative">
+            
+            {/* Datalist restaurada para Códigos IFES */}
             <datalist id="codigosSiga">
               <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.41 - Histórico escolar. Integralização curricular" />
@@ -299,20 +299,36 @@ export default function App() {
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
             </datalist>
 
-            {ocrStatus === 'success' && <div className="mb-4 p-2 bg-[#00bcd4] border-[3px] border-black font-black text-xs uppercase text-center text-black">✓ Informações capturadas com sucesso!</div>}
-            {ocrStatus === 'error' && <div className="mb-4 p-2 bg-[#c2185b] border-[3px] border-black font-black text-xs uppercase text-center text-white">⚠ Não foi possível ler a imagem com clareza.</div>}
+            {/* BOTÃO CÂMERA DISCRETO ACIMA DO FORMULÁRIO */}
+            <div className="flex justify-between items-center mb-6 border-b-[4px] border-black pb-4">
+              <span className="font-black text-gray-400 uppercase tracking-widest text-sm">Ficha de Inserção</span>
+              <button 
+                type="button"
+                onClick={() => fileInputRef.current.click()}
+                className="flex items-center gap-2 px-3 py-1 bg-black text-white font-bold text-sm uppercase hover:bg-gray-800 transition-colors cursor-pointer"
+              >
+                <span>📷</span>
+                {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa'}
+              </button>
+              <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
+            </div>
+
+            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black">✓ Informações capturadas com sucesso!</div>}
+            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white">⚠ Não foi possível ler a imagem com clareza. Tente novamente.</div>}
 
             {showConfirm ? (
-              <div className="flex flex-col gap-6 animate-in fade-in zoom-in duration-300">
+              <div className="flex flex-col gap-6 animate-in fade-in duration-300">
                 <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-2 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Departamento:</strong> <br/>{formData.departamento || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Curso:</strong> <br/>{formData.curso || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina:</strong> <br/>{formData.disciplina || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Estudantes:</strong> <br/>{[formData.estudante1, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código SIGA:</strong> <br/>{formData.codigo || '-'}</div>
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-4">
                    <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">Salvar na Planilha</button>
@@ -342,17 +358,25 @@ export default function App() {
                     <label className="font-black text-black uppercase tracking-wide">Departamento</label>
                     <input required type="text" name="departamento" value={formData.departamento} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
-                  <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Disciplina (Opcional)</label>
-                    <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                  </div>
                 </div>
 
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-2">
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-xs">Curso (Opcional)</label>
+                      <input type="text" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina (Opcional)</label>
+                      <input type="text" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
+                  </div>
+                  
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) (Opcional)</label>
                     <input type="text" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
                     <div className="flex flex-col gap-2">
                       <label className="font-black text-black uppercase tracking-wide text-sm">Estudante 1</label>
@@ -375,7 +399,7 @@ export default function App() {
                     <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código SIGA / IFES</label>
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código SIGA / IFES (Lista Suspensa)</label>
                     <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
@@ -393,7 +417,6 @@ export default function App() {
           </div>
         )}
 
-        {}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
             {fetchError && (
@@ -411,7 +434,7 @@ export default function App() {
                 <table className="w-full text-left border-collapse whitespace-nowrap">
                   <thead>
                     <tr className="bg-[#00bcd4] text-black">
-                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Orientador", "Mês/Ano"].map((header) => (
+                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Departamento", "Estudante 1", "Curso", "Disciplina", "Mês/Ano"].map((header) => (
                         <th key={header} onClick={() => handleSort(header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 last:border-r-0">
                           {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                         </th>
@@ -420,17 +443,18 @@ export default function App() {
                   </thead>
                   <tbody className="bg-gray-50">
                     {sortedItems.length === 0 ? (
-                      <tr><td colSpan="8" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
+                      <tr><td colSpan="9" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
                         <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0">
                           <td className="p-4 font-mono text-xs border-r-[4px] border-black">{item["Data/Hora"]}</td>
                           <td className="p-4 font-black border-r-[4px] border-black">{item["ID Pacote"]}</td>
                           <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,25)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,20)}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Departamento"]?.substring(0,10)}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Estudante 1"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Orientador"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Curso"]?.substring(0,20)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Disciplina"]?.substring(0,20)}</td>
                           <td className="p-4 font-black bg-[#ffe082]">{item["Mês/Ano"]}</td>
                         </tr>
                       ))
