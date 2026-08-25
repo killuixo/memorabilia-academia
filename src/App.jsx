@@ -109,30 +109,34 @@ export default function App() {
   };
 
   const parseOCR = (text) => {
-    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    // 1. Limpeza drástica para erros comuns do Tesseract (remove pontuações que geram lixo)
+    const lines = text.split('\n')
+      .map(l => l.trim().replace(/[*|/\\_\[\]{}():;]/g, ' ')) 
+      .filter(l => l.replace(/[^a-zA-Z]/g, '').length > 3); // Ignora linhas que não tem pelo menos 3 letras
+
     const fullText = lines.join(' '); 
     let parsed = { centro: '', departamento: '', curso: '', disciplina: '', orientador: '', mesAno: '', estudantes: [] };
 
-    /* 1. MÊS/ANO: Localiza qualquer menção a mês seguido de ano de 1900 a 2099 */
+    /* 1. MÊS/ANO: Localiza mês seguido de ano */
     const monthMap = {janeiro:'01', fevereiro:'02', marco:'03', março:'03', abril:'04', maio:'05', junho:'06', julho:'07', agosto:'08', setembro:'09', outubro:'10', novembro:'11', dezembro:'12'};
-    const dateMatch = fullText.match(/(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro).*?(19\d{2}|20\d{2})/i);
+    const dateMatch = fullText.match(/(janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de)?\s*(19\d{2}|20\d{2})/i);
     if (dateMatch) {
       parsed.mesAno = `${dateMatch[2]}-${monthMap[dateMatch[1].toLowerCase()]}`;
     }
 
     /* 2. CURSO: Ex: "...curso de Pedagogia, da Universidade..." */
-    const cursoMatch = fullText.match(/curso de\s+([^,.\n]+)/i);
+    const cursoMatch = fullText.match(/curso de\s+([a-zA-ZÀ-ÿ\s]+?)(?:da universidade|sob a|florian)/i);
     if (cursoMatch) parsed.curso = cursoMatch[1].trim();
 
-    /* 3. DISCIPLINA: Ex: "estágio de observação" ou "Disciplina: Prática de Ensino..." */
-    const discMatch1 = fullText.match(/disciplina:\s*([^,.\n]+)/i);
-    const discMatch2 = fullText.match(/estágio de\s+([^,.\n]+)/i);
+    /* 3. DISCIPLINA: Ex: "estágio de observação" ou "Disciplina Prática de Ensino..." */
+    const discMatch1 = fullText.match(/disciplina\s*([a-zA-ZÀ-ÿ\sI]+?)(?:prof|acad|alun|florian)/i);
+    const discMatch2 = fullText.match(/estágio de\s+([a-zA-ZÀ-ÿ\s]+?)(?:proposto|no curso)/i);
     if (discMatch1) parsed.disciplina = discMatch1[1].trim();
     else if (discMatch2) parsed.disciplina = "Estágio de " + discMatch2[1].trim();
 
     /* 4. ORIENTADOR: Ex: "...orientação da professora Alice..." ou "Profª Maria Izabel..." */
-    const oriMatch1 = fullText.match(/orientação d[ao] professor[a]?\s+([^,.\n]+)/i);
-    const oriMatch2 = fullText.match(/prof[ªa-z.\s]*:\s*([^,.\n]+)/i);
+    const oriMatch1 = fullText.match(/orientação d[ao] professor[a]?\s+([a-zA-ZÀ-ÿ\s]+)/i);
+    const oriMatch2 = fullText.match(/prof[a-zA-ZÀ-ÿ\s]*\s+([A-Z][a-zA-ZÀ-ÿ\s]+?)(?:acad|alun|florian|$)/i);
     if (oriMatch1) parsed.orientador = oriMatch1[1].trim();
     else if (oriMatch2) parsed.orientador = oriMatch2[1].trim();
 
@@ -143,37 +147,48 @@ export default function App() {
     if (fullText.match(/men|metodologia de ensino/i)) parsed.departamento = 'MEN';
     if (fullText.match(/llv|vern[áa]culas/i)) parsed.departamento = 'LLV';
 
-    /* 6. ESTUDANTES: Lê explicitamente "Acadêmicos:" ou adivinha nomes soltos no topo do arquivo (Capa 2) */
+    /* 6. ESTUDANTES: Limpeza anti-lixo e extração inteligente */
     let captureStudents = false;
     let foundExplicit = false;
+    
     for (let i = 0; i < lines.length; i++) {
       const lowerLine = lines[i].toLowerCase();
-      // Capa 1: Acha a palavra-chave
-      if (lowerLine.match(/acad[êe]micos:|alunos:/)) {
+      
+      // Gatilho para a Capa 1 (Acadêmicos) - tolerando erros de OCR como "Academlcos"
+      if (lowerLine.match(/acad[eêëc]micos|alunos/)) {
           captureStudents = true;
           foundExplicit = true;
-          let inlineName = lines[i].replace(/.*?(acad[êe]micos|alunos)\s*[:\-]?\s*/i, '').trim();
-          if (inlineName.length > 3) parsed.estudantes.push(inlineName);
+          let inlineName = lines[i].replace(/.*?(acad[eêëc]micos|alunos)/i, '').trim();
+          inlineName = inlineName.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim(); // Remove totalmente lixo de OCR
+          if (inlineName.length > 5 && inlineName.includes(' ')) parsed.estudantes.push(inlineName);
           continue;
       }
+      
       if (captureStudents) {
           // Para de ler nomes se bater na cidade ou datas
           if (lowerLine.match(/florian[óo]polis|janeiro|fevereiro|março|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro/)) {
-            captureStudents = false; break;
+            break;
           }
-          if (parsed.estudantes.length < 3 && lines[i].length > 4 && !lines[i].match(/relat[óo]rio|disciplina|prof/i)) {
-            parsed.estudantes.push(lines[i].replace(/^[^a-zA-ZÀ-ÿ]+/, '').trim());
+          let cleanName = lines[i].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+          
+          // Validação Estrita Anti-Lixo: O nome lido deve ter >5 letras, ter um espaço (nome e sobrenome) e não ser uma palavra-chave
+          if (parsed.estudantes.length < 3 && cleanName.length > 5 && cleanName.includes(' ') && !cleanName.match(/relat[óo]rio|disciplina|prof/i)) {
+            parsed.estudantes.push(cleanName);
           }
       }
     }
 
-    // Capa 2: Se não achou "Acadêmicos:", pressupõe que as primeiras 3 linhas do topo são nomes
+    // Capa 2: Se não achou palavra-chave explícita, lê os nomes do topo do documento
     if (!foundExplicit && parsed.estudantes.length === 0) {
-      for (let i = 0; i < Math.min(4, lines.length); i++) {
-        const line = lines[i];
-        if (line.match(/universidade|centro|departamento|ministério|curso|relatório/i)) continue;
-        if (line.length > 5 && line.length < 45) {
-          parsed.estudantes.push(line.trim());
+      for (let i = 0; i < Math.min(6, lines.length); i++) {
+        let line = lines[i].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+        // Ignora cabeçalhos institucionais e títulos
+        if (line.match(/universidade|centro|departamento|minist[ée]rio|curso|relat[óo]rio|recortes|cotidiano/i)) continue;
+        
+        // Validação Estrita Anti-Lixo para o topo
+        if (line.length > 5 && line.length < 45 && line.includes(' ')) {
+          parsed.estudantes.push(line);
+          if(parsed.estudantes.length >= 3) break;
         }
       }
     }
