@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 
 // ==========================================
 // CONFIGURAÇÕES DO APLICATIVO
@@ -208,7 +208,7 @@ const parseExtractedText = (rawText) => {
           let stampMatch = fullText.match(/23080\.(\d{6})\/(\d{2,4})/);
           if(stampMatch) {
               let year = stampMatch[2].length === 2 ? (parseInt(stampMatch[2]) > 50 ? '19'+stampMatch[2] : '20'+stampMatch[2]) : stampMatch[2];
-              parsed.dataDocumento = `${year}-01`;
+              parsed.dataDocumento = `${year}-01`; // Aproximação
           } else {
               let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
               if (yearMatch) parsed.dataDocumento = `${yearMatch[yearMatch.length - 1]}-01`;
@@ -249,6 +249,70 @@ const parseExtractedText = (rawText) => {
   }
 
   return parsed;
+};
+
+// ==========================================
+// COMPONENTES GRÁFICOS (DASHBOARD)
+// ==========================================
+const PieChart = ({ data, title }) => {
+  const total = data.reduce((acc, item) => acc + item.value, 0);
+  if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400">Sem dados para {title}</div>;
+
+  let currentAngle = 0;
+  const slices = data.map((item, idx) => {
+      const percentage = (item.value / total) * 100;
+      const startAngle = currentAngle;
+      const endAngle = currentAngle + percentage;
+      currentAngle = endAngle;
+      return { ...item, percentage, color: `hsl(${(idx * 360) / Math.max(1, data.length)}, 70%, 50%)` };
+  });
+
+  const gradientString = slices.map(s => `${s.color} ${currentAngle - s.percentage}% ${currentAngle}%`).join(', ');
+
+  return (
+    <div className="flex flex-col items-center bg-white p-4 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-full">
+      <h3 className="font-black text-sm uppercase tracking-widest mb-4 border-b-[2px] border-black w-full text-center pb-2">{title}</h3>
+      <div className="relative w-32 h-32 rounded-full border-[4px] border-black" style={{ background: `conic-gradient(${slices.map(s => `${s.color} ${s.startAngle}% ${s.endAngle}%`).join(', ')})` }}>
+        <div className="absolute inset-0 m-auto w-16 h-16 bg-white rounded-full border-[4px] border-black flex items-center justify-center">
+          <span className="font-black text-sm">{total}</span>
+        </div>
+      </div>
+      <div className="mt-4 w-full flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
+        {slices.map((item, idx) => (
+          <div key={idx} className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider">
+            <div className="flex items-center gap-2 truncate">
+              <div className="w-3 h-3 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
+              <span className="truncate" title={item.label}>{item.label}</span>
+            </div>
+            <span className="flex-shrink-0 ml-2">{item.value} ({item.percentage.toFixed(1)}%)</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const BarChart = ({ data, title, color = "#00bcd4" }) => {
+  const maxVal = Math.max(...data.map(d => d.value), 1);
+
+  return (
+    <div className="flex flex-col items-center bg-white p-4 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-full">
+      <h3 className="font-black text-sm uppercase tracking-widest mb-4 border-b-[2px] border-black w-full text-center pb-2">{title}</h3>
+      {data.length === 0 ? (
+         <div className="p-4 text-center text-sm font-bold text-gray-400">Sem dados</div>
+      ) : (
+        <div className="flex items-end justify-start w-full h-40 gap-2 border-b-[4px] border-l-[4px] border-black pb-1 pl-1 overflow-x-auto">
+          {data.map((item, idx) => (
+            <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] h-full group relative">
+              <span className="absolute -top-5 text-[9px] font-black opacity-0 group-hover:opacity-100 transition-opacity">{item.value}</span>
+              <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity" style={{ height: `${Math.max((item.value / maxVal) * 100, 5)}%`, backgroundColor: color }}></div>
+              <span className="text-[8px] font-black mt-1 uppercase -rotate-45 translate-y-3 truncate max-w-[40px] text-center">{item.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ==========================================
@@ -303,7 +367,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'acervo') fetchItems();
+    if (activeTab === 'acervo' || activeTab === 'dashboard') fetchItems();
   }, [activeTab]);
 
   useEffect(() => {
@@ -346,6 +410,7 @@ export default function App() {
   ].filter(Boolean))];
   const uniqueSeries = [...new Set(items.map(i => i["Série"]).filter(Boolean))];
   const uniqueTipos = [...new Set(items.map(i => i["Tipo Documental"]).filter(Boolean))];
+  const uniqueCodigos = [...new Set(items.map(i => i["Código de Classificação"]).filter(Boolean))];
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -453,6 +518,50 @@ export default function App() {
     return 0;
   });
 
+  // Métricas do Dashboard
+  const dashboardStats = useMemo(() => {
+    const stats = {
+      origem: {}, mesAno: {}, ano: {}, decada: {}, codigo: {}
+    };
+
+    items.forEach(item => {
+      // Origem
+      const origem = item["Origem"] || "Não Informado";
+      stats.origem[origem] = (stats.origem[origem] || 0) + 1;
+
+      // Datas (Mês/Ano, Ano, Década)
+      const dataStr = item["Data do documento"];
+      if (dataStr) {
+        stats.mesAno[dataStr] = (stats.mesAno[dataStr] || 0) + 1;
+        
+        let ano = '';
+        if (dataStr.includes('-')) ano = dataStr.split('-')[0];
+        else if (dataStr.length >= 4) ano = dataStr.substring(0, 4);
+        
+        if (ano && !isNaN(parseInt(ano))) {
+          stats.ano[ano] = (stats.ano[ano] || 0) + 1;
+          const decada = Math.floor(parseInt(ano) / 10) * 10;
+          stats.decada[`${decada}s`] = (stats.decada[`${decada}s`] || 0) + 1;
+        }
+      }
+
+      // Código de Classificação
+      const codigo = item["Código de Classificação"] || "Sem Código";
+      stats.codigo[codigo] = (stats.codigo[codigo] || 0) + 1;
+    });
+
+    // Formata para os gráficos (Array de {label, value})
+    const formatData = (obj, sortFn) => Object.entries(obj).map(([label, value]) => ({ label, value })).sort(sortFn);
+
+    return {
+      origem: formatData(stats.origem, (a, b) => b.value - a.value).slice(0, 15), // Top 15 Origens
+      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)), // Cronológico
+      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)), // Cronológico
+      decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label)), // Cronológico
+      codigo: formatData(stats.codigo, (a, b) => b.value - a.value).slice(0, 10), // Top 10 Códigos
+    };
+  }, [items]);
+
   return (
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
       <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
@@ -465,15 +574,21 @@ export default function App() {
           <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
               onClick={() => setActiveTab('registro')}
-              className={`flex-1 px-4 py-4 font-black uppercase tracking-wider text-sm md:text-xl border-b-[8px] md:border-b-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm border-b-[8px] md:border-b-[8px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Registrar
             </button>
             <button 
               onClick={() => setActiveTab('acervo')}
-              className={`flex-1 px-4 py-4 font-black uppercase tracking-wider text-sm md:text-xl transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm border-b-[8px] md:border-b-[8px] border-black transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Ver Acervo
+            </button>
+            <button 
+              onClick={() => setActiveTab('dashboard')}
+              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm transition-colors ${activeTab === 'dashboard' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+            >
+              Dashboard
             </button>
           </div>
         </div>
@@ -482,6 +597,7 @@ export default function App() {
           <div className="flex flex-col bg-white p-6 relative">
             
             <datalist id="codigosSiga">
+              {uniqueCodigos.map((cod, idx) => <option key={`cod-${idx}`} value={cod} />)}
               <option value="022.61 - Cumprimento de estágio probatório. Homologação da estabilidade" />
               <option value="022.63 - Promoção e progressão funcional" />
               <option value="028.11 - Cumprimento de missões e viagens a serviço - no país - com ônus" />
@@ -492,23 +608,27 @@ export default function App() {
             </datalist>
             
             <datalist id="listaOrigens">
-              {uniqueOrigens.map((ori, idx) => <option key={idx} value={ori} />)}
+              {uniqueOrigens.map((ori, idx) => <option key={`ori-${idx}`} value={ori} />)}
+            </datalist>
+
+            <datalist id="listaEscopos">
+              {uniqueEscopos.map((esc, idx) => <option key={`esc-${idx}`} value={esc} />)}
             </datalist>
             
             <datalist id="listaOrientadores">
-              {uniqueOrientadores.map((ori, idx) => <option key={idx} value={ori} />)}
+              {uniqueOrientadores.map((ori, idx) => <option key={`orien-${idx}`} value={ori} />)}
             </datalist>
 
             <datalist id="listaProdutores">
-              {uniqueProdutores.map((est, idx) => <option key={idx} value={est} />)}
+              {uniqueProdutores.map((est, idx) => <option key={`prod-${idx}`} value={est} />)}
             </datalist>
 
             <datalist id="listaTipos">
-              {uniqueTipos.map((tipo, idx) => <option key={idx} value={tipo} />)}
+              {uniqueTipos.map((tipo, idx) => <option key={`tipo-${idx}`} value={tipo} />)}
             </datalist>
 
             <datalist id="listaSeries">
-              {uniqueSeries.map((serie, idx) => <option key={idx} value={serie} />)}
+              {uniqueSeries.map((serie, idx) => <option key={`serie-${idx}`} value={serie} />)}
             </datalist>
 
             <div className="flex justify-between items-center mb-6 border-b-[4px] border-black pb-4">
@@ -571,7 +691,7 @@ export default function App() {
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">Origem (Curso/Depto)</label>
-                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
@@ -579,9 +699,6 @@ export default function App() {
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Escopo e Conteúdo (Assunto / Disciplina) *</label>
                     <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    <datalist id="listaEscopos">
-                      {uniqueEscopos.map((esc, idx) => <option key={idx} value={esc} />)}
-                    </datalist>
                   </div>
                   
                   <div className="flex flex-col gap-2">
@@ -607,15 +724,15 @@ export default function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Tipo Documental</label>
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Tipo Documental</label>
                     <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Série Documental</label>
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Série Documental</label>
                     <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Data do Documento (Mês/Ano ou Ano) *</label>
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Data do Documento (Mês/Ano ou Ano) *</label>
                     <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-black focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: 2008-11" />
                   </div>
                   <div className="flex flex-col gap-2">
@@ -638,7 +755,7 @@ export default function App() {
 
         {/* Aba do Acervo para Listagem */}
         {activeTab === 'acervo' && (
-          <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
+          <div className="p-6 md:p-8 flex flex-col bg-white min-h-[500px]">
             {fetchError && (
               <div className="mb-6 bg-red-200 border-[4px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                 <p className="font-black text-red-900 uppercase">⚠ Erro:</p><p className="font-bold text-sm mt-1">{fetchError}</p>
@@ -650,38 +767,89 @@ export default function App() {
                 <p className="font-black text-2xl uppercase animate-pulse">Consultando Planilha...</p>
               </div>
             ) : (
-              <div className="overflow-x-auto border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-                <table className="w-full text-left border-collapse whitespace-nowrap">
-                  <thead>
-                    <tr className="bg-[#00bcd4] text-black">
-                      {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data do documento", "Tipo", "Série"].map((header) => (
-                        <th key={header} onClick={() => handleSort(header === "Tipo" ? "Tipo Documental" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
-                          {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="bg-gray-50">
-                    {sortedItems.length === 0 ? (
-                      <tr><td colSpan="9" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
-                    ) : (
-                      sortedItems.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0 text-sm">
-                          <td className="p-4 font-mono text-[10px] border-r-[4px] border-black">{item["Data de análise"]}</td>
-                          <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,20)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Origem"]?.substring(0,20)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,30)}{item["Escopo e Conteúdo"]?.length > 30 ? '...' : ''}</td>
-                          <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">{item["Data do documento"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Tipo Documental"]}</td>
-                          <td className="p-4 font-bold">{item["Série"]?.substring(0,20)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+              <div className="overflow-hidden border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+                <div className="max-h-[60vh] overflow-y-auto">
+                  <table className="w-full text-left border-collapse whitespace-nowrap">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="bg-[#00bcd4] text-black shadow-sm">
+                        {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data do documento", "Tipo Documental", "Série", "Código Class."].map((header) => (
+                          <th key={header} onClick={() => handleSort(header === "Código Class." ? "Código de Classificação" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
+                            {header} {sortConfig.key === (header === "Código Class." ? "Código de Classificação" : header) && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="bg-gray-50">
+                      {sortedItems.length === 0 ? (
+                        <tr><td colSpan="10" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
+                      ) : (
+                        sortedItems.map((item, idx) => (
+                          <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0 text-sm">
+                            <td className="p-4 font-mono text-[10px] border-r-[4px] border-black">{item["Data de análise"]?.split(',')[0]}</td>
+                            <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,10)}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Origem"]?.substring(0,20)}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"]?.substring(0,20)}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,25)}{item["Escopo e Conteúdo"]?.length > 25 ? '...' : ''}</td>
+                            <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">
+                                {item["Data do documento"] && item["Data do documento"].includes('-') ? item["Data do documento"].split('-').reverse().join('/') : item["Data do documento"]}
+                            </td>
+                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Tipo Documental"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Série"]?.substring(0,20)}</td>
+                            <td className="p-4 font-mono text-[10px]">{item["Código de Classificação"]?.split('-')[0]}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Aba de Dashboard */}
+        {activeTab === 'dashboard' && (
+          <div className="p-6 md:p-8 flex flex-col bg-[#e0f7fa] min-h-[500px]">
+            {loadingList ? (
+               <div className="flex-1 flex items-center justify-center">
+                 <p className="font-black text-2xl uppercase animate-pulse">Calculando Estatísticas...</p>
+               </div>
+            ) : items.length === 0 ? (
+               <div className="flex-1 flex items-center justify-center p-10 bg-white border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+                 <p className="font-black text-xl uppercase text-gray-400">Acervo vazio. Registre itens para ver os gráficos.</p>
+               </div>
+            ) : (
+               <div className="flex flex-col gap-6">
+                 
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div className="h-[400px]">
+                     <PieChart data={dashboardStats.origem} title="Acervo por Origem" />
+                   </div>
+                   <div className="h-[400px]">
+                     <PieChart data={dashboardStats.decada} title="Acervo por Décadas" />
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                   <div className="h-[350px]">
+                     <BarChart data={dashboardStats.mesAno} title="Acervo Mês a Mês" color="#c2185b" />
+                   </div>
+                   <div className="h-[350px]">
+                     <BarChart data={dashboardStats.ano} title="Acervo Ano a Ano" color="#ffb300" />
+                   </div>
+                 </div>
+
+                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                   <div className="h-[450px] col-span-1 md:col-span-1">
+                     <PieChart data={dashboardStats.codigo} title="Códigos de Classificação (Pizza)" />
+                   </div>
+                   <div className="h-[450px] col-span-1 md:col-span-2">
+                     <BarChart data={dashboardStats.codigo} title="Quantidade por Código de Classificação" color="#00bcd4" />
+                   </div>
+                 </div>
+
+               </div>
             )}
           </div>
         )}
