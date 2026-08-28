@@ -40,23 +40,25 @@ const resizeImageForOCR = (file, maxWidth = 1200) => {
 const toTitleCase = (str) => {
   if (!str) return '';
   return str.toLowerCase().replace(/(?:^|\s)\S/g, (a) => a.toUpperCase())
-            .replace(/\b(De|Do|Da|Dos|Das|E)\b/g, (a) => a.toLowerCase())
+            .replace(/\b(De|Do|Da|Dos|Das|E|Em)\b/g, (a) => a.toLowerCase())
             .replace(/\b(Ii|Iii|Iv|Vi|Vii|Viii|Ix|Xi)\b/g, (a) => a.toUpperCase());
 };
 
 // ==========================================
-// LÓGICA ARQUIVÍSTICA E EXTRAÇÃO DE CAPAS
+// LÓGICA ARQUIVÍSTICA E EXTRAÇÃO DE CAPAS E PROCESSOS
 // ==========================================
 const parseExtractedText = (rawText) => {
   let parsed = { 
     centro: '', 
-    curso: '', 
+    origem: '', 
     disciplina: '', 
     orientador: '', 
     produtor: '', 
     estudante2: '', 
     estudante3: '', 
-    mesAno: '',
+    dataDocumento: '',
+    tipoDocumental: '',
+    serie: '',
     codigo: ''
   };
   
@@ -64,7 +66,7 @@ const parseExtractedText = (rawText) => {
   const fullText = rawLines.join(' ');
   const upperFullText = fullText.toUpperCase();
 
-  // 1. Centro (Sua Sigla / Nome)
+  // 1. Centro (Sua Sigla)
   let centroLine = rawLines.find(l => /^CENTRO\b/i.test(l) || /\b(CCE|CED|CFH|CTC|CDS|CCB|CFM|CCS|CCJ|CCA|CSE)\b/i.test(l));
   if (centroLine) {
       let match = centroLine.match(/(?:-|–|—)\s*([A-Z]{3,4})\b/);
@@ -84,7 +86,7 @@ const parseExtractedText = (rawText) => {
           else if (upper.includes('SOCIO') || upper.includes('ECONOM')) parsed.centro = 'CSE';
           else {
               let matchSigla = centroLine.match(/\b([A-Z]{3,4})\b/);
-              parsed.centro = matchSigla ? matchSigla[1] : 'CED';
+              parsed.centro = matchSigla ? matchSigla[1] : '';
           }
       }
   } else if (upperFullText.includes('MEN/CED') || upperFullText.includes('CED')) {
@@ -95,38 +97,40 @@ const parseExtractedText = (rawText) => {
       parsed.centro = 'CFH';
   }
 
-  // 2. Curso / Origem
-  let cursoLine = rawLines.find(l => /^CURSO\b/i.test(l) || /^ORIGEM:/i.test(l));
-  if (cursoLine) {
-     let textCurso = cursoLine.replace(/^(?:CURSO|ORIGEM)[:\s]*/i, '').replace(/^DE\s+/i, '');
-     textCurso = textCurso.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
-     textCurso = textCurso.replace(/(?:-|–|—)\s*[A-Z0-9]+\s*$/, '');
-     parsed.curso = toTitleCase(textCurso.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+  // 2. Origem / Curso
+  let origemLine = rawLines.find(l => /^ORIGEM[:\s]*|^CURSO\b/i.test(l));
+  if (origemLine) {
+     let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '');
+     textOrigem = textOrigem.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
+     textOrigem = textOrigem.replace(/(?:-|–|—)\s*[A-Z0-9/]+\s*$/, '');
+     parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
   } else {
      let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
      if (cursoMatch) {
-       parsed.curso = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+       parsed.origem = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
      } else if (upperFullText.includes('MEN/CED') || upperFullText.includes('METODOLOGIA DE ENSINO')) {
-       parsed.curso = 'Metodologia de Ensino';
+       parsed.origem = 'Metodologia de Ensino';
      }
   }
 
-  // 3. Produtor / Requerente (Dono do Processo ou Estudante 1)
-  let reqLine = rawLines.find(l => /(?:Requerente|Produtor|Interessado)[s]?[:\s]*/i.test(l));
+  // 3. Produtor / Requerente / Estudante
+  let reqLine = rawLines.find(l => /(?:Requerente|Interessado)[:\s]*/i.test(l));
   if (reqLine) {
-      let prodText = reqLine.replace(/^(?:Requerente|Produtor|Interessado)[s]?[:\s]*/i, '');
-      prodText = prodText.split(/(?:-|–|—|\d)/)[0];
+      // É capa de PROCESSO
+      let prodText = reqLine.replace(/^(?:Requerente|Interessado)[:\s]*/i, '');
+      prodText = prodText.split(/(?:-|–|—)/)[0];
       parsed.produtor = toTitleCase(prodText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   } else {
-      let rawStudentIndex = rawLines.findIndex(l => /^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)\b/i.test(l));
+      // É capa de RELATÓRIO
+      let rawStudentIndex = rawLines.findIndex(l => /^(?:Acad[eê]mic[oa]s?\s*:?|Alun[oa]s?\s*:?)\b/i.test(l));
       let students = [];
       if (rawStudentIndex !== -1) {
-          let firstStudentLine = rawLines[rawStudentIndex].replace(/^(?:Acad[eê]mic[oa]s?|Alun[oa]s?)[:\s]*/i, '');
-          firstStudentLine = firstStudentLine.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-          if (firstStudentLine.includes(' ') && firstStudentLine.length > 4) students.push(toTitleCase(firstStudentLine));
+          let firstStudentLine = rawLines[rawStudentIndex].replace(/^(?:Acad[eê]mic[oa]s?\s*:?|Alun[oa]s?\s*:?)\s*/i, '');
+          let cleanedFirst = firstStudentLine.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
+          if (cleanedFirst.includes(' ') && cleanedFirst.length > 4) students.push(toTitleCase(cleanedFirst));
           
           for (let i = rawStudentIndex + 1; i <= rawStudentIndex + 2 && i < rawLines.length; i++) {
-              if (rawLines[i].length <= 2) break; 
+              if (rawLines[i].length <= 2 || rawLines[i].trim() === '') break; 
               let cleaned = rawLines[i].split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
               if (cleaned.includes(' ') && cleaned.length > 4 && !/["“”:]/.test(rawLines[i])) {
                   students.push(toTitleCase(cleaned));
@@ -135,6 +139,7 @@ const parseExtractedText = (rawText) => {
               }
           }
       } else {
+          // Busca no topo da página
           let topLines = rawLines.slice(0, 6).filter(l => !/UNIVERSIDADE|FEDERAL|CENTRO|CURSO|DISCIPLINA|TRABALHO|RELATÓRIO|SUMÁRIO|PROCESSO|"/i.test(l));
           for (let l of topLines) {
               let cleaned = l.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
@@ -148,7 +153,7 @@ const parseExtractedText = (rawText) => {
       if (students[2]) parsed.estudante3 = students[2];
   }
 
-  // 4. Orientador(a)
+  // 4. Orientador(a) / Professora
   let profLine = rawLines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
   if (profLine) {
       let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '');
@@ -168,47 +173,74 @@ const parseExtractedText = (rawText) => {
          parsed.disciplina = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       } else {
          let discMatch = fullText.match(/disciplina\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/IV]+?)(?:,|\.|\s+do curso|\s+da universidade|$)/i);
-         if (discMatch) parsed.disciplina = toTitleCase(discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/IV]/gi, '').trim());
+         if (discMatch) {
+            parsed.disciplina = toTitleCase(discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/IV]/gi, '').trim());
+         } else if (profLine) {
+            let profIndex = rawLines.indexOf(profLine);
+            if (profIndex > 0) {
+               let lineAbove = rawLines[profIndex - 1];
+               if (!/CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
+                  parsed.disciplina = toTitleCase(lineAbove.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+               }
+            }
+         }
       }
   }
 
-  // 6. Mês e Ano
+  // 6. Data do Documento
   let dateMatch = fullText.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
   if (dateMatch) {
-      let year = dateMatch[3].length === 2 ? '20' + dateMatch[3] : dateMatch[3];
+      let year = dateMatch[3].length === 2 ? (parseInt(dateMatch[3]) > 50 ? '19'+dateMatch[3] : '20'+dateMatch[3]) : dateMatch[3];
       let month = dateMatch[2].padStart(2, '0');
-      parsed.mesAno = `${year}-${month}`;
+      parsed.dataDocumento = `${year}-${month}`;
   } else {
       let textDateMatch = fullText.match(/([a-zA-Zç]+)\s+de\s+(20\d{2}|19\d{2})/i);
       if (textDateMatch) {
           const monthMap = { 'janeiro':'01','fevereiro':'02','março':'03','abril':'04','maio':'05','junho':'06','julho':'07','agosto':'08','setembro':'09','outubro':'10','novembro':'11','dezembro':'12'};
           let month = monthMap[textDateMatch[1].toLowerCase()] || '01';
-          parsed.mesAno = `${textDateMatch[2]}-${month}`;
+          parsed.dataDocumento = `${textDateMatch[2]}-${month}`;
       } else {
-          let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
-          if (yearMatch) parsed.mesAno = `${yearMatch[yearMatch.length - 1]}-01`;
+          let stampMatch = fullText.match(/23080\.(\d{6})\/(\d{2,4})/);
+          if(stampMatch) {
+              let year = stampMatch[2].length === 2 ? (parseInt(stampMatch[2]) > 50 ? '19'+stampMatch[2] : '20'+stampMatch[2]) : stampMatch[2];
+              parsed.dataDocumento = `${year}-01`;
+          } else {
+              let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
+              if (yearMatch) parsed.dataDocumento = `${yearMatch[yearMatch.length - 1]}-01`;
+          }
       }
   }
 
-  // 7. Código de Classificação Arquivística (Inferência Inteligente)
+  // 7. Inteligência Arquivística (Tipo Documental, Série e Código IFES/Arquivo Nacional)
   if (upperFullText.includes('PROGRESSÃO') || upperFullText.includes('PROGRESSAO') || upperFullText.includes('PROMOÇÃO') || upperFullText.includes('PROMOCAO')) {
+      parsed.tipoDocumental = upperFullText.includes('MEMORIAL') ? 'Memorial Descritivo' : 'Processo Administrativo';
+      parsed.serie = 'Processos de Progressão Funcional';
       parsed.codigo = "022.63 - Promoção e progressão funcional";
+  } else if (upperFullText.includes('ESTÁGIO PROBATÓRIO') || upperFullText.includes('ESTAGIO PROBATORIO')) {
+      parsed.tipoDocumental = upperFullText.includes('MEMORIAL') ? 'Memorial Descritivo' : 'Processo Administrativo';
+      parsed.serie = 'Processos de Estágio Probatório';
+      parsed.codigo = "022.61 - Cumprimento de estágio probatório. Homologação da estabilidade";
   } else if (upperFullText.includes('AFASTAMENTO') || upperFullText.includes('EVENTO') || upperFullText.includes('VIAGEM')) {
+      parsed.tipoDocumental = 'Processo Administrativo';
       if (upperFullText.includes('EXTERIOR') || upperFullText.includes('PAÍS') || upperFullText.includes('PAIS')) {
+          parsed.serie = 'Afastamentos para o Exterior';
           parsed.codigo = "028.21 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO EXTERIOR - COM ÔNUS";
       } else {
+          parsed.serie = 'Afastamentos no País';
           parsed.codigo = "028.11 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO PAÍS - COM ÔNUS";
       }
-  } else if (upperFullText.includes('LICENÇA') || upperFullText.includes('LICENCA')) {
-      parsed.codigo = "023.3 - Licenças";
-  } else if (upperFullText.includes('RELATÓRIO') || upperFullText.includes('RELATORIO') || upperFullText.includes('ESTÁGIO') || upperFullText.includes('ESTAGIO') || upperFullText.includes('PRÁTICA') || upperFullText.includes('PRATICA')) {
+  } else if (upperFullText.includes('RELATÓRIO') || upperFullText.includes('RELATORIO') || upperFullText.includes('PRÁTICA') || upperFullText.includes('PRATICA')) {
+      parsed.tipoDocumental = 'Relatório';
+      parsed.serie = 'Relatórios de Estágio Obrigatório';
       parsed.codigo = "125.31 - Provas. Exames. Trabalhos";
   } else if (upperFullText.includes('TCC') || upperFullText.includes('MONOGRAFIA') || upperFullText.includes('CONCLUSÃO DE CURSO')) {
+      parsed.tipoDocumental = 'Monografia / TCC';
+      parsed.serie = 'Trabalhos de Conclusão de Curso';
       parsed.codigo = "125.32 - Trabalho de conclusão de curso";
-  } else if (upperFullText.includes('DOSSIÊ') || upperFullText.includes('DOSSIE') || upperFullText.includes('ASSENTAMENTO')) {
+  } else if (upperFullText.includes('DOSSIÊ') || upperFullText.includes('DOSSIE')) {
+      parsed.tipoDocumental = 'Dossiê';
+      parsed.serie = 'Assentamentos Individuais';
       parsed.codigo = "125.43 - Assentamentos individuais dos alunos (Dossiês)";
-  } else {
-      parsed.codigo = "125.31 - Provas. Exames. Trabalhos";
   }
 
   return parsed;
@@ -220,14 +252,14 @@ const parseExtractedText = (rawText) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState('registro'); 
   const [items, setItems] = useState([]);
-  const [sortConfig, setSortConfig] = useState({ key: 'Data/Hora', direction: 'desc' });
+  const [sortConfig, setSortConfig] = useState({ key: 'Data de análise', direction: 'desc' });
   const [loadingList, setLoadingList] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
   const initialFormState = {
-    pacote: '', idItem: '', centro: '', curso: '',
+    pacote: '', idItem: '', centro: '', origem: '',
     produtor: '', estudante2: '', estudante3: '', orientador: '',
-    disciplina: '', mesAno: '', codigo: '', observacoes: ''
+    disciplina: '', dataDocumento: '', codigo: '', tipoDocumental: '', serie: '', observacoes: ''
   };
 
   const [formData, setFormData] = useState(initialFormState);
@@ -272,6 +304,7 @@ export default function App() {
   useEffect(() => {
     if (items.length === 0) return;
 
+    // Sugere próximo ID Item e mantém ID Pacote baseando-se estritamente na última linha da planilha
     const lastItem = items[items.length - 1]; 
 
     setFormData(prev => {
@@ -298,14 +331,16 @@ export default function App() {
     });
   }, [items]);
 
-  const uniqueCursos = [...new Set(items.map(i => i["Curso"]).filter(Boolean))];
+  const uniqueOrigens = [...new Set(items.map(i => i["Origem"]).filter(Boolean))];
   const uniqueDisciplinas = [...new Set(items.map(i => i["Disciplina"]).filter(Boolean))];
   const uniqueOrientadores = [...new Set(items.map(i => i["Orientador"]).filter(Boolean))];
   const uniqueProdutores = [...new Set([
-      ...items.map(i => i["Produtor"] || i["Estudante 1"]),
+      ...items.map(i => i["Produtor"]),
       ...items.map(i => i["Estudante 2"]),
       ...items.map(i => i["Estudante 3"])
   ].filter(Boolean))];
+  const uniqueSeries = [...new Set(items.map(i => i["Série"]).filter(Boolean))];
+  const uniqueTipos = [...new Set(items.map(i => i["Tipo Documental"]).filter(Boolean))];
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -340,14 +375,16 @@ export default function App() {
       setFormData(prev => ({
         ...prev,
         centro: parsedData.centro || prev.centro,
-        curso: parsedData.curso || prev.curso,
+        origem: parsedData.origem || prev.origem,
         disciplina: parsedData.disciplina || prev.disciplina,
         orientador: parsedData.orientador || prev.orientador,
-        mesAno: parsedData.mesAno || prev.mesAno,
+        dataDocumento: parsedData.dataDocumento || prev.dataDocumento,
         produtor: parsedData.produtor || prev.produtor,
         estudante2: parsedData.estudante2 || prev.estudante2,
         estudante3: parsedData.estudante3 || prev.estudante3,
-        codigo: parsedData.codigo || prev.codigo
+        codigo: parsedData.codigo || prev.codigo,
+        tipoDocumental: parsedData.tipoDocumental || prev.tipoDocumental,
+        serie: parsedData.serie || prev.serie
       }));
 
       setOcrStatus('success');
@@ -385,7 +422,7 @@ export default function App() {
         ...initialFormState,
         pacote: prev.pacote,
         centro: prev.centro,
-        curso: prev.curso,
+        origem: prev.origem,
         idItem: ''
       }));
       
@@ -415,11 +452,10 @@ export default function App() {
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
       <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
-        {/* HEADER MONDRIAN */}
         <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
           <div className="bg-[#c2185b] flex-1 p-6 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
-            <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Memorabilia</h1>
-            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem Arquivística Acadêmica • MEN / UFSC</p>
+            <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
+            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem Arquivística Acadêmica</p>
           </div>
           <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
@@ -437,42 +473,21 @@ export default function App() {
           </div>
         </div>
 
-        {/* TAB 1: REGISTRO DE PROCESSOS E RELATÓRIOS */}
         {activeTab === 'registro' && (
           <div className="flex flex-col bg-white p-6 relative">
             
-            {/* DATALISTS PARA AUTOCOMPLETAR */}
-            <datalist id="codigosArquivisticos">
+            <datalist id="codigosSiga">
+              <option value="022.61 - Cumprimento de estágio probatório. Homologação da estabilidade" />
               <option value="022.63 - Promoção e progressão funcional" />
-              <option value="022.1 - Provimento de cargo público" />
-              <option value="023.12 - Reestruturação e alteração salarial" />
-              <option value="023.3 - Licenças" />
-              <option value="023.4 - Afastamentos" />
-              <option value="027.1 - Averiguação de denúncias" />
-              <option value="027.2 - Aplicação de penalidades disciplinares" />
               <option value="028.11 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO PAÍS - COM ÔNUS" />
-              <option value="028.12 - COM ÔNUS LIMITADO" />
               <option value="028.21 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO EXTERIOR - COM ÔNUS" />
-              <option value="028.22 - COM ÔNUS LIMITADO" />
-              <option value="028.23 - SEM ÔNUS" />
-              <option value="018.1 - Contratação de pessoa jurídica" />
-              <option value="018.2 - Contratação de pessoa física" />
-              <option value="054.1 - Prestação de contas. Tomada de contas" />
-              <option value="125.31 - Provas. Exames. Trabalhos (Relatório de Estágio)" />
+              <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.32 - Trabalho de conclusão de curso" />
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
-              <option value="134.334 - Dissertação e tese" />
-              <option value="220 - Programas de pesquisa" />
-              <option value="230 - Projetos de pesquisa" />
-              <option value="240 - Iniciação científica" />
-              <option value="320 - Programas de extensão" />
-              <option value="330 - Projetos de extensão" />
-              <option value="340 - Cursos de extensão" />
-              <option value="520 - Programas, convênios e auxílios a estudantes" />
             </datalist>
             
-            <datalist id="listaCursos">
-              {uniqueCursos.map((curso, idx) => <option key={idx} value={curso} />)}
+            <datalist id="listaOrigens">
+              {uniqueOrigens.map((ori, idx) => <option key={idx} value={ori} />)}
             </datalist>
             
             <datalist id="listaDisciplinas">
@@ -487,9 +502,16 @@ export default function App() {
               {uniqueProdutores.map((est, idx) => <option key={idx} value={est} />)}
             </datalist>
 
-            {/* BOTÃO CÂMERA DISCRETO */}
+            <datalist id="listaTipos">
+              {uniqueTipos.map((tipo, idx) => <option key={idx} value={tipo} />)}
+            </datalist>
+
+            <datalist id="listaSeries">
+              {uniqueSeries.map((serie, idx) => <option key={idx} value={serie} />)}
+            </datalist>
+
             <div className="flex justify-between items-center mb-6 border-b-[4px] border-black pb-4">
-              <span className="font-black text-gray-400 uppercase tracking-widest text-sm">Ficha de Triagem Arquivística</span>
+              <span className="font-black text-gray-400 uppercase tracking-widest text-sm">Ficha de Inserção Arquivística</span>
               
               <button 
                 type="button"
@@ -497,40 +519,37 @@ export default function App() {
                 className="flex items-center gap-2 px-3 py-2 bg-white border-[3px] border-black text-black font-black text-xs uppercase hover:bg-gray-100 transition-colors cursor-pointer shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none"
               >
                 <span role="img" aria-label="Camera">📷</span>
-                {ocrStatus === 'loading' ? 'Lendo Capa/Processo...' : 'Ler Capa (Câmera)'}
+                {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa (Câmera)'}
               </button>
 
               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
             </div>
 
-            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">✓ Campos preenchidos automaticamente! Por favor, revise antes de enviar.</div>}
-            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">⚠ Não foi possível extrair dados da imagem. Preencha os campos manualmente.</div>}
+            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">✓ Campos preenchidos automaticamente! Por favor, revise.</div>}
+            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">⚠ Erro ao processar a imagem. Tente novamente ou preencha manualmente.</div>}
 
-            {/* TELA DE REVISÃO E CONFIRMAÇÃO DA FICHA */}
             {showConfirm ? (
               <div className="flex flex-col gap-6 animate-in fade-in duration-300">
-                <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-2 border-b-[6px] border-black pb-2">Confirmar Inserção Arquivística</h2>
+                <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-2 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
-                    <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Pacote:</strong> <br/>{formData.pacote || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Curso / Unidade:</strong> <br/>{formData.curso || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudante 1:</strong> <br/>{formData.produtor || '-'}</div>
-                    {(formData.estudante2 || formData.estudante3) && (
-                      <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Outros Integrantes:</strong> <br/>{[formData.estudante2, formData.estudante3].filter(Boolean).join(' | ')}</div>
-                    )}
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina / Assunto do Processo:</strong> <br/>{formData.disciplina || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a) / Relator:</strong> <br/>{formData.orientador || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Mês/Ano:</strong> <br/>{formData.mesAno || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Código de Classificação (Coluna L):</strong> <br/>{formData.codigo || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem/Curso:</strong> <br/>{formData.origem || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina / Assunto:</strong> <br/>{formData.disciplina || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudantes:</strong> <br/>{[formData.produtor, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Data do Documento:</strong> <br/>{formData.dataDocumento || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Tipo Documental:</strong> <br/>{formData.tipoDocumental || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Série:</strong> <br/>{formData.serie || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Código Classificação IFES/SIGA:</strong> <br/>{formData.codigo || '-'}</div>
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-4">
                    <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Salvar na Planilha</button>
-                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Editar Campos</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Voltar e Editar</button>
                 </div>
               </div>
             ) : (
-              /* FORMULÁRIO DE INSERÇÃO */
               <form onSubmit={handlePreSubmit} className="flex flex-col gap-8">
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
@@ -546,38 +565,37 @@ export default function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Centro *</label>
-                    <input required type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide">Centro</label>
+                    <input type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Curso / Unidade *</label>
-                    <input required type="text" list="listaCursos" name="curso" value={formData.curso} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide">Origem (Curso/Depto)</label>
+                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                 </div>
 
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Produtor / Requerente / Estudante 1 *</label>
-                    <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Nome do titular do processo ou aluno" />
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina / Assunto do Processo</label>
-                    <input type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: Prática de Ensino ou Progressão Funcional" />
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina / Assunto *</label>
+                    <input required type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) / Interessado</label>
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) / Professor(a)</label>
                     <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t-[4px] border-black border-dashed">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2 (Se houver)</label>
+                      <label className="font-black text-black uppercase tracking-wide text-sm">Produtor / Estudante 1 *</label>
+                      <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2</label>
                       <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                     <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3 (Se houver)</label>
+                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3</label>
                       <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                     </div>
                   </div>
@@ -585,12 +603,20 @@ export default function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Mês e Ano *</label>
-                    <input required type="month" name="mesAno" value={formData.mesAno} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg focus:outline-none focus:bg-white uppercase font-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide">Tipo Documental</label>
+                    <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código de Classificação (Coluna L)</label>
-                    <input type="text" list="codigosArquivisticos" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Selecione na lista suspensa..." />
+                    <label className="font-black text-black uppercase tracking-wide">Série Documental</label>
+                    <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide">Data do Documento (Mês/Ano ou Ano) *</label>
+                    <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-black focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: 2008-11" />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código de Classificação IFES/SIGA</label>
+                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Selecione ou digite..." />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações</label>
@@ -606,7 +632,7 @@ export default function App() {
           </div>
         )}
 
-        {/* TAB 2: ACERVO PARA LISTAGEM E NAVEGAÇÃO */}
+        {/* Aba do Acervo para Listagem */}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white overflow-hidden min-h-[500px]">
             {fetchError && (
@@ -624,8 +650,8 @@ export default function App() {
                 <table className="w-full text-left border-collapse whitespace-nowrap">
                   <thead>
                     <tr className="bg-[#00bcd4] text-black">
-                      {["Data/Hora", "ID Pacote", "ID Item", "Centro", "Curso", "Produtor", "Disciplina/Assunto", "Mês/Ano", "Código"].map((header) => (
-                        <th key={header} onClick={() => handleSort(header === "Produtor" ? "Produtor" : header === "Código" ? "Código de Classificação" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-sm cursor-pointer hover:bg-cyan-300 last:border-r-0">
+                      {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Disciplina/Assunto", "Data do documento", "Tipo", "Série"].map((header) => (
+                        <th key={header} onClick={() => handleSort(header === "Disciplina/Assunto" ? "Disciplina" : header === "Tipo" ? "Tipo Documental" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
                           {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                         </th>
                       ))}
@@ -636,16 +662,16 @@ export default function App() {
                       <tr><td colSpan="9" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
                     ) : (
                       sortedItems.map((item, idx) => (
-                        <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0">
-                          <td className="p-4 font-mono text-xs border-r-[4px] border-black">{item["Data/Hora"]}</td>
-                          <td className="p-4 font-black border-r-[4px] border-black">{item["ID Pacote"]}</td>
+                        <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0 text-sm">
+                          <td className="p-4 font-mono text-[10px] border-r-[4px] border-black">{item["Data de análise"]}</td>
                           <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,15)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Curso"]?.substring(0,18)}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"] || item["Estudante 1"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Disciplina"]?.substring(0,25)}</td>
-                          <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">{item["Mês/Ano"]}</td>
-                          <td className="p-4 font-mono text-xs font-bold">{item["Código de Classificação"] || item["Código IFES"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,20)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Origem"]?.substring(0,20)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Disciplina"]?.substring(0,30)}</td>
+                          <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">{item["Data do documento"]}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Tipo Documental"]}</td>
+                          <td className="p-4 font-bold">{item["Série"]?.substring(0,20)}</td>
                         </tr>
                       ))
                     )}
