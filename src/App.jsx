@@ -229,10 +229,10 @@ const parseExtractedText = (rawText) => {
       parsed.tipoDocumental = 'Processo Administrativo';
       if (upperFullText.includes('EXTERIOR') || upperFullText.includes('PAÍS') || upperFullText.includes('PAIS')) {
           parsed.serie = 'Afastamentos para o Exterior';
-          parsed.codigo = "028.21 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO EXTERIOR - COM ÔNUS";
+          parsed.codigo = "028.21 - Cumprimento de missões e viagens a serviço - no exterior - com ônus";
       } else {
           parsed.serie = 'Afastamentos no País';
-          parsed.codigo = "028.11 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO PAÍS - COM ÔNUS";
+          parsed.codigo = "028.11 - Cumprimento de missões e viagens a serviço - no país - com ônus";
       }
   } else if (upperFullText.includes('RELATÓRIO') || upperFullText.includes('RELATORIO') || upperFullText.includes('PRÁTICA') || upperFullText.includes('PRATICA')) {
       parsed.tipoDocumental = 'Relatório';
@@ -484,8 +484,8 @@ export default function App() {
             <datalist id="codigosSiga">
               <option value="022.61 - Cumprimento de estágio probatório. Homologação da estabilidade" />
               <option value="022.63 - Promoção e progressão funcional" />
-              <option value="028.11 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO PAÍS - COM ÔNUS" />
-              <option value="028.21 - CUMPRIMENTO DE MISSÕES E VIAGENS A SERVIÇO - NO EXTERIOR - COM ÔNUS" />
+              <option value="028.11 - Cumprimento de missões e viagens a serviço - no país - com ônus" />
+              <option value="028.21 - Cumprimento de missões e viagens a serviço - no exterior - com ônus" />
               <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.32 - Trabalho de conclusão de curso" />
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
