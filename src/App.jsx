@@ -162,9 +162,14 @@ const parseExtractedText = (rawText) => {
   }
 
   // 5. Assunto / Disciplina (Agora Escopo e Conteúdo)
-  let assuntoLine = rawLines.find(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
-  if (assuntoLine) {
-      let textAssunto = assuntoLine.replace(/^(?:Assunto|Detalhamento)[:\s]*/i, '');
+  let assuntoIndex = rawLines.findIndex(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
+  if (assuntoIndex !== -1) {
+      let textAssunto = rawLines[assuntoIndex].replace(/^(?:Assunto|Detalhamento)[:\s]*/i, '');
+      // Continua capturando as próximas linhas caso o assunto seja longo, até bater em outro campo
+      for (let i = assuntoIndex + 1; i < rawLines.length; i++) {
+          if (/^(?:Palavra\s*Chave|Detalhamento|Origem|Requerente|Data|\d{2}-EST[ÁA]GIO|SUM[ÁA]RIO)/i.test(rawLines[i])) break;
+          textAssunto += ' ' + rawLines[i];
+      }
       parsed.escopoConteudo = toTitleCase(textAssunto.trim());
   } else {
       let discLine = rawLines.find(l => /^DISCIPLINA[:\s]*/i.test(l));
