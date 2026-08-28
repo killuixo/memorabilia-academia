@@ -490,10 +490,6 @@ export default function App() {
               {uniqueOrigens.map((ori, idx) => <option key={idx} value={ori} />)}
             </datalist>
             
-            <datalist id="listaDisciplinas">
-              {uniqueDisciplinas.map((disc, idx) => <option key={idx} value={disc} />)}
-            </datalist>
-            
             <datalist id="listaOrientadores">
               {uniqueOrientadores.map((ori, idx) => <option key={idx} value={ori} />)}
             </datalist>
