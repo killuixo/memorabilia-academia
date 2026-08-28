@@ -51,7 +51,7 @@ const parseExtractedText = (rawText) => {
   let parsed = { 
     centro: '', 
     origem: '', 
-    disciplina: '', 
+    escopoConteudo: '', 
     orientador: '', 
     produtor: '', 
     estudante2: '', 
@@ -161,26 +161,26 @@ const parseExtractedText = (rawText) => {
       parsed.orientador = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
-  // 5. Assunto / Disciplina
+  // 5. Assunto / Disciplina (Agora Escopo e Conteúdo)
   let assuntoLine = rawLines.find(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
   if (assuntoLine) {
       let textAssunto = assuntoLine.replace(/^(?:Assunto|Detalhamento)[:\s]*/i, '');
-      parsed.disciplina = toTitleCase(textAssunto.trim());
+      parsed.escopoConteudo = toTitleCase(textAssunto.trim());
   } else {
       let discLine = rawLines.find(l => /^DISCIPLINA[:\s]*/i.test(l));
       if (discLine) {
          let textDisc = discLine.replace(/^DISCIPLINA[:\s]*/i, '').replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, '');
-         parsed.disciplina = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+         parsed.escopoConteudo = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       } else {
          let discMatch = fullText.match(/disciplina\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/IV]+?)(?:,|\.|\s+do curso|\s+da universidade|$)/i);
          if (discMatch) {
-            parsed.disciplina = toTitleCase(discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/IV]/gi, '').trim());
+            parsed.escopoConteudo = toTitleCase(discMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/IV]/gi, '').trim());
          } else if (profLine) {
             let profIndex = rawLines.indexOf(profLine);
             if (profIndex > 0) {
                let lineAbove = rawLines[profIndex - 1];
                if (!/CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
-                  parsed.disciplina = toTitleCase(lineAbove.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+                  parsed.escopoConteudo = toTitleCase(lineAbove.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
                }
             }
          }
@@ -259,7 +259,7 @@ export default function App() {
   const initialFormState = {
     pacote: '', idItem: '', centro: '', origem: '',
     produtor: '', estudante2: '', estudante3: '', orientador: '',
-    disciplina: '', dataDocumento: '', codigo: '', tipoDocumental: '', serie: '', observacoes: ''
+    escopoConteudo: '', dataDocumento: '', codigo: '', tipoDocumental: '', serie: '', observacoes: ''
   };
 
   const [formData, setFormData] = useState(initialFormState);
@@ -332,7 +332,7 @@ export default function App() {
   }, [items]);
 
   const uniqueOrigens = [...new Set(items.map(i => i["Origem"]).filter(Boolean))];
-  const uniqueDisciplinas = [...new Set(items.map(i => i["Disciplina"]).filter(Boolean))];
+  const uniqueEscopos = [...new Set(items.map(i => i["Escopo e Conteúdo"]).filter(Boolean))];
   const uniqueOrientadores = [...new Set(items.map(i => i["Orientador"]).filter(Boolean))];
   const uniqueProdutores = [...new Set([
       ...items.map(i => i["Produtor"]),
@@ -376,7 +376,7 @@ export default function App() {
         ...prev,
         centro: parsedData.centro || prev.centro,
         origem: parsedData.origem || prev.origem,
-        disciplina: parsedData.disciplina || prev.disciplina,
+        escopoConteudo: parsedData.escopoConteudo || prev.escopoConteudo,
         orientador: parsedData.orientador || prev.orientador,
         dataDocumento: parsedData.dataDocumento || prev.dataDocumento,
         produtor: parsedData.produtor || prev.produtor,
@@ -536,7 +536,7 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem/Curso:</strong> <br/>{formData.origem || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Disciplina / Assunto:</strong> <br/>{formData.disciplina || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Escopo e Conteúdo:</strong> <br/>{formData.escopoConteudo || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudantes:</strong> <br/>{[formData.produtor, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Data do Documento:</strong> <br/>{formData.dataDocumento || '-'}</div>
@@ -576,8 +576,11 @@ export default function App() {
 
                 <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Disciplina / Assunto *</label>
-                    <input required type="text" list="listaDisciplinas" name="disciplina" value={formData.disciplina} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Escopo e Conteúdo (Assunto / Disciplina) *</label>
+                    <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <datalist id="listaEscopos">
+                      {uniqueEscopos.map((esc, idx) => <option key={idx} value={esc} />)}
+                    </datalist>
                   </div>
                   
                   <div className="flex flex-col gap-2">
@@ -650,8 +653,8 @@ export default function App() {
                 <table className="w-full text-left border-collapse whitespace-nowrap">
                   <thead>
                     <tr className="bg-[#00bcd4] text-black">
-                      {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Disciplina/Assunto", "Data do documento", "Tipo", "Série"].map((header) => (
-                        <th key={header} onClick={() => handleSort(header === "Disciplina/Assunto" ? "Disciplina" : header === "Tipo" ? "Tipo Documental" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
+                      {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data do documento", "Tipo", "Série"].map((header) => (
+                        <th key={header} onClick={() => handleSort(header === "Tipo" ? "Tipo Documental" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
                           {header} {sortConfig.key === header && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                         </th>
                       ))}
@@ -668,7 +671,7 @@ export default function App() {
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,20)}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Origem"]?.substring(0,20)}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"]}</td>
-                          <td className="p-4 font-bold border-r-[4px] border-black">{item["Disciplina"]?.substring(0,30)}</td>
+                          <td className="p-4 font-bold border-r-[4px] border-black" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,30)}{item["Escopo e Conteúdo"]?.length > 30 ? '...' : ''}</td>
                           <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">{item["Data do documento"]}</td>
                           <td className="p-4 font-bold border-r-[4px] border-black">{item["Tipo Documental"]}</td>
                           <td className="p-4 font-bold">{item["Série"]?.substring(0,20)}</td>
