@@ -99,11 +99,15 @@ const parseExtractedText = (rawText) => {
 
   // 2. Origem / Curso
   let origemLine = rawLines.find(l => /^ORIGEM[:\s]*|^CURSO\b/i.test(l));
+  let deptoLine = rawLines.find(l => /^DEPARTAMENTO\b/i.test(l));
+
   if (origemLine) {
      let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '');
      textOrigem = textOrigem.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
-     textOrigem = textOrigem.replace(/(?:-|–|—)\s*[A-Z0-9/]+\s*$/, '');
-     parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+     parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
+  } else if (deptoLine) {
+     let textDepto = deptoLine.replace(/^DEPARTAMENTO(?: DE)?\s*/i, '');
+     parsed.origem = toTitleCase(textDepto.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
   } else {
      let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
      if (cursoMatch) {
@@ -173,8 +177,14 @@ const parseExtractedText = (rawText) => {
       parsed.escopoConteudo = toTitleCase(textAssunto.trim());
   } else {
       let discLine = rawLines.find(l => /^DISCIPLINA[:\s]*/i.test(l));
+      let codDiscLine = rawLines.find(l => /^([A-Z]{3})\s*(\d{4})\s*[-–—]\s*(.+)/i.test(l)); // Captura MEN 1170 - NOME...
+
       if (discLine) {
          let textDisc = discLine.replace(/^DISCIPLINA[:\s]*/i, '').replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, '');
+         parsed.escopoConteudo = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+      } else if (codDiscLine) {
+         let match = codDiscLine.match(/^([A-Z]{3})\s*(\d{4})\s*[-–—]\s*(.+)/i);
+         let textDisc = match[3].replace(/(?:-|–|—)\s*\d+\s*cr[ée]ditos.*/i, ''); // Limpa os créditos do final
          parsed.escopoConteudo = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       } else {
          let discMatch = fullText.match(/disciplina\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/IV]+?)(?:,|\.|\s+do curso|\s+da universidade|$)/i);
@@ -184,7 +194,7 @@ const parseExtractedText = (rawText) => {
             let profIndex = rawLines.indexOf(profLine);
             if (profIndex > 0) {
                let lineAbove = rawLines[profIndex - 1];
-               if (!/CENTRO|CURSO|UNIVERSIDADE/i.test(lineAbove)) {
+               if (!/CENTRO|CURSO|UNIVERSIDADE|PROGRAMA/i.test(lineAbove)) {
                   parsed.escopoConteudo = toTitleCase(lineAbove.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
                }
             }
@@ -208,10 +218,14 @@ const parseExtractedText = (rawText) => {
           let stampMatch = fullText.match(/23080\.(\d{6})\/(\d{2,4})/);
           if(stampMatch) {
               let year = stampMatch[2].length === 2 ? (parseInt(stampMatch[2]) > 50 ? '19'+stampMatch[2] : '20'+stampMatch[2]) : stampMatch[2];
-              parsed.dataDocumento = `${year}-01`; // Aproximação
+              parsed.dataDocumento = `${year}-01`; 
           } else {
               let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
-              if (yearMatch) parsed.dataDocumento = `${yearMatch[yearMatch.length - 1]}-01`;
+              if (yearMatch) {
+                  // Pega o maior ano encontrado no texto (excelente para bibliografias de planos de ensino)
+                  let maxYear = Math.max(...yearMatch.map(Number));
+                  parsed.dataDocumento = `${maxYear}-01`;
+              }
           }
       }
   }
@@ -234,6 +248,10 @@ const parseExtractedText = (rawText) => {
           parsed.serie = 'Afastamentos no País';
           parsed.codigo = "028.11 - Cumprimento de missões e viagens a serviço - no país - com ônus";
       }
+  } else if (upperFullText.includes('PROGRAMA') && (upperFullText.includes('OBJETIVO DA DISCIPLINA') || upperFullText.includes('BIBLIOGRAFIA') || upperFullText.includes('PLANO DE ENSINO') || upperFullText.includes('CRÉDITOS'))) {
+      parsed.tipoDocumental = 'Plano de Ensino / Programa';
+      parsed.serie = 'Programas de Disciplinas';
+      parsed.codigo = "122.3 - Disciplinas: programas didáticos";
   } else if (upperFullText.includes('RELATÓRIO') || upperFullText.includes('RELATORIO') || upperFullText.includes('PRÁTICA') || upperFullText.includes('PRATICA')) {
       parsed.tipoDocumental = 'Relatório';
       parsed.serie = 'Relatórios de Estágio Obrigatório';
