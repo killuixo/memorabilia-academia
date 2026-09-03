@@ -17,16 +17,24 @@ const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
 // FUNÇÕES UTILITÁRIAS
 // ==========================================
 const formatDateTime = (str) => {
-  if (!str) return '';
-  // Se já for no formato curto DD/MM/YYYY, retorna direto
-  if (/^\d{2}\/\d{2}\/\d{4}/.test(str)) return str;
-  try {
+  if (!str) return '--';
+  // Bloqueia e converte o fuso horário gigante do Google Sheets (ex: Wed Sep 02 2026 ... GMT-0300)
+  if (str.includes('GMT') || str.includes('Horário Padrão')) {
+    try {
       const d = new Date(str);
       if (!isNaN(d.getTime())) {
-          return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       }
-  } catch(e) {}
-  return str.substring(0, 20);
+    } catch(e) {}
+  }
+  // Se for uma data ISO
+  if (str.includes('T') && str.includes('Z')) {
+      try {
+          const d = new Date(str);
+          return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      } catch(e) {}
+  }
+  return str;
 };
 
 const resizeImageForOCR = (file, maxWidth = 1200) => {
@@ -62,18 +70,8 @@ const toTitleCase = (str) => {
 // ==========================================
 const parseExtractedText = (rawText) => {
   let parsed = { 
-    centro: '', 
-    origem: '', 
-    escopoConteudo: '', 
-    orientador: '', 
-    produtor: '', 
-    estudante2: '', 
-    estudante3: '', 
-    dataDocumento: '',
-    tipoDocumental: '',
-    serie: '',
-    codigo: '',
-    observacoes: ''
+    centro: '', origem: '', escopoConteudo: '', orientador: '', produtor: '', estudante2: '', estudante3: '', 
+    dataDocumento: '', tipoDocumental: '', serie: '', codigo: '', observacoes: ''
   };
   
   const rawLines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -86,7 +84,7 @@ const parseExtractedText = (rawText) => {
       parsed.observacoes = `Processo ${processoMatch[1]}`;
   }
 
-  // 1. Centro e Origem (Mapeamento Direto por Sigla MEN/CED)
+  // 1. Centro e Origem 
   if (/\bMEN\b/i.test(fullText) || upperFullText.includes('METODOLOGIA DE ENSINO')) {
       parsed.origem = 'MEN';
       parsed.centro = 'CED';
@@ -113,13 +111,9 @@ const parseExtractedText = (rawText) => {
                   parsed.centro = matchSigla ? matchSigla[1] : '';
               }
           }
-      } else if (upperFullText.includes('CED')) {
-          parsed.centro = 'CED';
-      } else if (upperFullText.includes('CCE')) {
-          parsed.centro = 'CCE';
-      } else if (upperFullText.includes('CFH')) {
-          parsed.centro = 'CFH';
-      }
+      } else if (upperFullText.includes('CED')) parsed.centro = 'CED';
+      else if (upperFullText.includes('CCE')) parsed.centro = 'CCE';
+      else if (upperFullText.includes('CFH')) parsed.centro = 'CFH';
   }
 
   // 2. Origem / Curso
@@ -128,17 +122,14 @@ const parseExtractedText = (rawText) => {
       let deptoLine = rawLines.find(l => /^DEPARTAMENTO\b/i.test(l));
 
       if (origemLine) {
-         let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '');
-         textOrigem = textOrigem.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
+         let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '').replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
          parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
       } else if (deptoLine) {
          let textDepto = deptoLine.replace(/^DEPARTAMENTO(?: DE)?\s*/i, '');
          parsed.origem = toTitleCase(textDepto.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
       } else {
          let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
-         if (cursoMatch) {
-           parsed.origem = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
-         }
+         if (cursoMatch) parsed.origem = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       }
   }
 
@@ -147,9 +138,7 @@ const parseExtractedText = (rawText) => {
   if (reqLineIndex !== -1) {
       let prodText = rawLines[reqLineIndex].replace(/^(?:Requerente|Interessado)[:\s]*/i, '').trim();
       if (/23080\./.test(prodText) || prodText === '') {
-          if (rawLines[reqLineIndex + 1]) {
-              prodText = rawLines[reqLineIndex + 1].trim();
-          }
+          if (rawLines[reqLineIndex + 1]) prodText = rawLines[reqLineIndex + 1].trim();
       }
       prodText = prodText.split(/(?:-|–|—)/)[0];
       parsed.produtor = toTitleCase(prodText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
@@ -164,19 +153,14 @@ const parseExtractedText = (rawText) => {
           for (let i = rawStudentIndex + 1; i <= rawStudentIndex + 2 && i < rawLines.length; i++) {
               if (rawLines[i].length <= 2 || rawLines[i].trim() === '') break; 
               let cleaned = rawLines[i].split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-              if (cleaned.includes(' ') && cleaned.length > 4 && !/["“”:]/.test(rawLines[i])) {
-                  students.push(toTitleCase(cleaned));
-              } else {
-                  break;
-              }
+              if (cleaned.includes(' ') && cleaned.length > 4 && !/["“”:]/.test(rawLines[i])) students.push(toTitleCase(cleaned));
+              else break;
           }
       } else {
           let topLines = rawLines.slice(0, 6).filter(l => !/UNIVERSIDADE|FEDERAL|CENTRO|CURSO|DISCIPLINA|TRABALHO|RELATÓRIO|SUMÁRIO|PROCESSO|"/i.test(l));
           for (let l of topLines) {
               let cleaned = l.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
-              if (cleaned.includes(' ') && cleaned.length > 5 && cleaned.length < 50 && !/["“”:]/.test(l)) {
-                  students.push(toTitleCase(cleaned));
-              }
+              if (cleaned.includes(' ') && cleaned.length > 5 && cleaned.length < 50 && !/["“”:]/.test(l)) students.push(toTitleCase(cleaned));
           }
       }
       if (students[0]) parsed.produtor = students[0];
@@ -187,8 +171,7 @@ const parseExtractedText = (rawText) => {
   // 4. Orientador(a) / Professora
   let profLine = rawLines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
   if (profLine) {
-      let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '');
-      profText = profText.replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, '');
+      let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '').replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, '');
       parsed.orientador = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
@@ -199,12 +182,8 @@ const parseExtractedText = (rawText) => {
   if (origemDesalinhada) {
       assuntoTexto = origemDesalinhada.replace(/^Origem[:\s]*/i, '').trim();
       let idx = rawLines.indexOf(origemDesalinhada);
-      if (rawLines[idx + 1] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 1])) {
-          assuntoTexto += ' ' + rawLines[idx + 1].trim();
-      }
-      if (rawLines[idx + 2] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 2])) {
-          assuntoTexto += ' ' + rawLines[idx + 2].trim();
-      }
+      if (rawLines[idx + 1] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 1])) assuntoTexto += ' ' + rawLines[idx + 1].trim();
+      if (rawLines[idx + 2] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 2])) assuntoTexto += ' ' + rawLines[idx + 2].trim();
   } else {
       let assuntoIndex = rawLines.findIndex(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
       if (assuntoIndex !== -1) {
@@ -245,28 +224,26 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 6. Data do Documento
-  let dateMatch = fullText.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
-  if (dateMatch) {
-      let year = dateMatch[3].length === 2 ? (parseInt(dateMatch[3]) > 50 ? '19'+dateMatch[3] : '20'+dateMatch[3]) : dateMatch[3];
-      let month = dateMatch[2].padStart(2, '0');
-      parsed.dataDocumento = `${year}-${month}`;
+  // 6. Data do Documento (Recuperada como Texto/Intervalo)
+  let intervalMatch = fullText.match(/\b(19\d{2}|20\d{2})\s*(?:-|a|~|à)\s*(19\d{2}|20\d{2})\b/i);
+  if (intervalMatch) {
+      parsed.dataDocumento = `${intervalMatch[1]} a ${intervalMatch[2]}`;
   } else {
-      let textDateMatch = fullText.match(/([a-zA-Zç]+)\s+de\s+(20\d{2}|19\d{2})/i);
-      if (textDateMatch) {
-          const monthMap = { 'janeiro':'01','fevereiro':'02','março':'03','abril':'04','maio':'05','junho':'06','julho':'07','agosto':'08','setembro':'09','outubro':'10','novembro':'11','dezembro':'12'};
-          let month = monthMap[textDateMatch[1].toLowerCase()] || '01';
-          parsed.dataDocumento = `${textDateMatch[2]}-${month}`;
+      let fullDateMatch = fullText.match(/(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})/);
+      if (fullDateMatch) {
+          let year = fullDateMatch[3].length === 2 ? (parseInt(fullDateMatch[3]) > 50 ? '19'+fullDateMatch[3] : '20'+fullDateMatch[3]) : fullDateMatch[3];
+          let month = fullDateMatch[2].padStart(2, '0');
+          let day = fullDateMatch[1].padStart(2, '0');
+          parsed.dataDocumento = `${day}/${month}/${year}`;
       } else {
-          let stampMatch = fullText.match(/23080\.(\d{6})\/(\d{2,4})/);
-          if(stampMatch) {
-              let year = stampMatch[2].length === 2 ? (parseInt(stampMatch[2]) > 50 ? '19'+stampMatch[2] : '20'+stampMatch[2]) : stampMatch[2];
-              parsed.dataDocumento = `${year}-01`; 
+          let textDateMatch = fullText.match(/([a-zA-Zç]+)\s+de\s+(20\d{2}|19\d{2})/i);
+          if (textDateMatch) {
+              parsed.dataDocumento = `${textDateMatch[1].substring(0,3)}/${textDateMatch[2]}`;
           } else {
               let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
               if (yearMatch) {
                   let maxYear = Math.max(...yearMatch.map(Number));
-                  parsed.dataDocumento = `${maxYear}-01`;
+                  parsed.dataDocumento = `${maxYear}`;
               }
           }
       }
@@ -316,11 +293,10 @@ const parseExtractedText = (rawText) => {
 // ==========================================
 const PieChart = ({ data, title }) => {
   const total = data.reduce((acc, item) => acc + item.value, 0);
-  if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400 border-[4px] border-black h-full bg-white flex items-center justify-center">Sem dados para {title}</div>;
+  if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400 border-[4px] border-black min-h-[250px] bg-white flex items-center justify-center">Sem dados</div>;
 
   const slices = data.map((item, idx) => {
       const percentage = (item.value / total) * 100;
-      // Gera cores bem distintas para o gráfico
       const color = `hsl(${(idx * 360) / Math.max(1, data.length)}, 70%, 50%)`;
       return { ...item, percentage, color };
   });
@@ -330,11 +306,11 @@ const PieChart = ({ data, title }) => {
   return (
     <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
-      <div className="flex flex-col md:flex-row items-center gap-6 justify-center flex-1">
+      <div className="flex flex-col items-center gap-6 justify-center flex-1">
         
-        {/* Gráfico de Pizza em SVG (100% compatível com navegadores mobile) */}
-        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0 rounded-full border-[4px] border-black overflow-hidden bg-white">
-          <svg viewBox="0 0 32 32" className="absolute inset-0 w-full h-full transform -rotate-90">
+        {/* Gráfico SVG Puro (100% Compatível) */}
+        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0">
+          <svg viewBox="0 0 32 32" className="w-full h-full transform -rotate-90 rounded-full border-[4px] border-black bg-white">
             {slices.map((slice, idx) => {
               const dasharray = `${slice.percentage} ${100 - slice.percentage}`;
               const dashoffset = -cumulativePercent;
@@ -352,20 +328,19 @@ const PieChart = ({ data, title }) => {
               );
             })}
           </svg>
-          {/* Círculo central branco para fazer o efeito "Donut" */}
-          <div className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 bg-white rounded-full border-[4px] border-black flex items-center justify-center z-10">
+          <div className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 bg-white rounded-full border-[4px] border-black flex items-center justify-center z-10 shadow-inner">
             <span className="font-black text-base md:text-xl">{total}</span>
           </div>
         </div>
 
-        <div className="w-full flex flex-col gap-2 max-h-[150px] overflow-y-auto pr-2">
+        <div className="w-full flex flex-col gap-3 max-h-[200px] overflow-y-auto pr-2 mt-4">
           {slices.map((item, idx) => (
-            <div key={idx} className="flex justify-between items-center text-[10px] md:text-xs font-bold uppercase tracking-wider">
-              <div className="flex items-center gap-2 truncate">
-                <div className="w-3 h-3 md:w-4 md:h-4 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
-                <span className="truncate" title={item.label}>{item.label}</span>
+            <div key={idx} className="flex justify-between items-start text-[10px] md:text-xs font-bold uppercase tracking-wider gap-2">
+              <div className="flex items-start gap-2">
+                <div className="w-3 h-3 md:w-4 md:h-4 mt-0.5 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
+                <span className="leading-tight text-left break-words line-clamp-2">{item.label}</span>
               </div>
-              <span className="flex-shrink-0 ml-2 font-black">{item.value} <span className="opacity-50">({item.percentage.toFixed(1)}%)</span></span>
+              <span className="flex-shrink-0 font-black">{item.value} <span className="opacity-50 font-normal">({item.percentage.toFixed(1)}%)</span></span>
             </div>
           ))}
         </div>
@@ -374,21 +349,25 @@ const PieChart = ({ data, title }) => {
   );
 };
 
-const BarChart = ({ data, title, color = "#c2185b" }) => {
+const BarChart = ({ data, title, color = "#00bcd4" }) => {
   const maxVal = Math.max(...data.map(d => d.value), 1);
 
   return (
     <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       {data.length === 0 ? (
-         <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400">Sem dados</div>
+         <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400 min-h-[250px]">Sem dados</div>
       ) : (
-        <div className="flex-1 flex items-end justify-start w-full gap-2 border-b-[4px] border-l-[4px] border-black pb-12 pt-6 pl-2 overflow-x-auto relative">
+        <div className="flex-1 flex items-end justify-start w-full gap-4 border-b-[4px] border-l-[4px] border-black pb-24 pt-8 pl-2 overflow-x-auto relative">
           {data.map((item, idx) => (
             <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] md:min-w-[40px] h-full group relative">
               <span className="absolute -top-6 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-10">{item.value}</span>
               <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity relative" style={{ height: `${Math.max((item.value / maxVal) * 100, 2)}%`, backgroundColor: color }}></div>
-              <span className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left text-[9px] font-black mt-1 uppercase whitespace-nowrap">{item.label}</span>
+              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left flex items-start w-[80px]">
+                  <span className="text-[9px] md:text-[10px] font-black uppercase truncate w-full text-right" title={item.label}>
+                     {item.label}
+                  </span>
+              </div>
             </div>
           ))}
         </div>
@@ -406,8 +385,8 @@ export default function App() {
   const [sortConfig, setSortConfig] = useState({ key: 'Data de análise', direction: 'desc' });
   const [loadingList, setLoadingList] = useState(false);
   const [fetchError, setFetchError] = useState('');
-  const [viewMode, setViewMode] = useState('list'); // 'list' ou 'card'
-  const [selectedCodigo, setSelectedCodigo] = useState(null); // Para modal de Ficha Resumo
+  const [viewMode, setViewMode] = useState('list'); 
+  const [selectedCodigo, setSelectedCodigo] = useState(null); 
 
   const initialFormState = {
     pacote: '', idItem: '', centro: '', origem: '',
@@ -592,16 +571,24 @@ export default function App() {
 
       const dataStr = item["Data do documento"];
       if (dataStr) {
-        stats.mesAno[dataStr] = (stats.mesAno[dataStr] || 0) + 1;
-        let ano = '';
-        if (dataStr.includes('-')) ano = dataStr.split('-')[0];
-        else if (dataStr.length >= 4) ano = dataStr.substring(0, 4);
-        
-        if (ano && !isNaN(parseInt(ano))) {
-          stats.ano[ano] = (stats.ano[ano] || 0) + 1;
-          const decada = Math.floor(parseInt(ano) / 10) * 10;
-          stats.decada[`${decada}s`] = (stats.decada[`${decada}s`] || 0) + 1;
+        let cleanDate = dataStr;
+        if (cleanDate.includes('GMT')) {
+           try {
+               const d = new Date(cleanDate);
+               if (!isNaN(d.getTime())) cleanDate = d.toISOString().substring(0,7);
+           } catch(e) {}
         }
+
+        const yearMatch = cleanDate.match(/\b(19\d{2}|20\d{2})\b/);
+        if (yearMatch) {
+            const ano = yearMatch[1];
+            stats.ano[ano] = (stats.ano[ano] || 0) + 1;
+            const decada = Math.floor(parseInt(ano) / 10) * 10;
+            stats.decada[`${decada}s`] = (stats.decada[`${decada}s`] || 0) + 1;
+        }
+
+        const mesAnoLabel = cleanDate.substring(0, 20); // Impede que a string quebre o layout
+        stats.mesAno[mesAnoLabel] = (stats.mesAno[mesAnoLabel] || 0) + 1;
       }
 
       const codigo = item["Código de Classificação"] || "Sem Código";
@@ -612,26 +599,26 @@ export default function App() {
 
     return {
       origem: formatData(stats.origem, (a, b) => b.value - a.value).slice(0, 15),
-      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)),
-      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)),
+      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)).slice(-15), // Pega os 15 mais recentes
+      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)).slice(-15),
       decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label)),
       codigo: formatData(stats.codigo, (a, b) => b.value - a.value).slice(0, 10),
     };
   }, [items]);
 
   return (
-    <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
+    <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-4 md:py-6 px-2 md:px-4 font-sans selection:bg-[#ffb300]">
       
       {/* Modal Ficha Resumo do Código de Classificação */}
       {selectedCodigo && (
         <div className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
            <div className="bg-white border-[8px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] w-full max-w-5xl max-h-[90vh] flex flex-col">
-              <div className="p-4 bg-[#00bcd4] text-black flex justify-between items-center border-b-[6px] border-black">
+              <div className="p-4 bg-[#00bcd4] text-black flex justify-between items-start md:items-center border-b-[6px] border-black flex-col md:flex-row gap-4">
                  <div>
                     <h2 className="font-black uppercase text-xs md:text-sm tracking-widest opacity-80">Ficha Resumo da Classificação</h2>
-                    <h3 className="font-black text-xl md:text-2xl mt-1">{selectedCodigo}</h3>
+                    <h3 className="font-black text-lg md:text-2xl mt-1 leading-tight">{selectedCodigo}</h3>
                  </div>
-                 <button onClick={() => setSelectedCodigo(null)} className="w-10 h-10 border-[4px] border-black bg-white font-black hover:bg-red-500 hover:text-white transition-colors active:translate-y-1 active:translate-x-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none">X</button>
+                 <button onClick={() => setSelectedCodigo(null)} className="w-12 h-12 flex-shrink-0 border-[4px] border-black bg-white font-black text-xl hover:bg-red-500 hover:text-white transition-colors active:translate-y-1 active:translate-x-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none">X</button>
               </div>
               <div className="p-4 overflow-y-auto bg-gray-50 flex-1">
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -642,8 +629,8 @@ export default function App() {
                              <span className="font-bold">{item["Data do documento"]}</span>
                           </div>
                           <div className="font-bold uppercase tracking-wider">{item["Origem"]}</div>
-                          <div className="font-black text-lg leading-tight">{item["Escopo e Conteúdo"] || item["Disciplina"]}</div>
-                          <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-50">Produtor:</span> {item["Produtor"] || item["Estudante 1"] || '--'}</div>
+                          <div className="font-black text-lg leading-tight">{item["Escopo e Conteúdo"]}</div>
+                          <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-50">Produtor:</span> {item["Produtor"] || '--'}</div>
                        </div>
                     ))}
                  </div>
@@ -652,37 +639,38 @@ export default function App() {
         </div>
       )}
 
-      <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
+      <div className="w-full max-w-6xl bg-white border-[6px] md:border-[12px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
-        <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
-          <div className="bg-[#c2185b] flex-1 p-6 text-white border-b-[8px] md:border-b-0 md:border-r-[12px] border-black">
-            <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
-            <p className="mt-1 text-pink-200 font-bold text-base md:text-lg">Triagem Arquivística Acadêmica</p>
+        <div className="flex flex-col md:flex-row border-b-[6px] md:border-b-[12px] border-black">
+          <div className="bg-[#c2185b] flex-1 p-4 md:p-6 text-white border-b-[6px] md:border-b-0 md:border-r-[12px] border-black">
+            <h1 className="text-2xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
+            <p className="mt-1 text-pink-200 font-bold text-sm md:text-lg">Triagem Arquivística Acadêmica</p>
           </div>
           <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
               onClick={() => setActiveTab('registro')}
-              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm border-b-[8px] md:border-b-[8px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-2 md:px-4 py-3 md:py-4 font-black uppercase tracking-wider text-[10px] md:text-xl border-b-[6px] md:border-b-[12px] border-black transition-colors ${activeTab === 'registro' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Registrar
             </button>
             <button 
               onClick={() => setActiveTab('acervo')}
-              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm border-b-[8px] md:border-b-[8px] border-black transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-2 md:px-4 py-3 md:py-4 font-black uppercase tracking-wider text-[10px] md:text-xl border-b-[6px] md:border-b-[12px] border-black transition-colors ${activeTab === 'acervo' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Ver Acervo
             </button>
             <button 
               onClick={() => setActiveTab('dashboard')}
-              className={`flex-1 px-4 py-3 font-black uppercase tracking-wider text-sm transition-colors ${activeTab === 'dashboard' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
+              className={`flex-1 px-2 md:px-4 py-3 md:py-4 font-black uppercase tracking-wider text-[10px] md:text-xl transition-colors ${activeTab === 'dashboard' ? 'bg-white text-black' : 'text-black hover:bg-[#ffe082]'}`}
             >
               Dashboard
             </button>
           </div>
         </div>
 
+        {}
         {activeTab === 'registro' && (
-          <div className="flex flex-col bg-white p-6 relative">
+          <div className="flex flex-col bg-white p-4 md:p-6 relative">
             
             <datalist id="codigosSiga">
               {uniqueCodigos.map((cod, idx) => <option key={`cod-${idx}`} value={cod} />)}
@@ -720,13 +708,13 @@ export default function App() {
               {uniqueSeries.map((serie, idx) => <option key={`serie-${idx}`} value={serie} />)}
             </datalist>
 
-            <div className="flex justify-between items-center mb-6 border-b-[4px] border-black pb-4">
-              <span className="font-black text-gray-400 uppercase tracking-widest text-sm">Ficha de Inserção Arquivística</span>
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 border-b-[4px] border-black pb-4">
+              <span className="font-black text-gray-400 uppercase tracking-widest text-xs md:text-sm">Ficha de Inserção Arquivística</span>
               
               <button 
                 type="button"
                 onClick={() => fileInputRef.current.click()}
-                className="flex items-center gap-2 px-3 py-2 bg-white border-[3px] border-black text-black font-black text-xs uppercase hover:bg-gray-100 transition-colors cursor-pointer shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none"
+                className="w-full md:w-auto flex items-center justify-center gap-2 px-4 py-3 bg-white border-[3px] border-black text-black font-black text-sm uppercase hover:bg-gray-100 transition-colors cursor-pointer shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none"
               >
                 <span role="img" aria-label="Camera">📷</span>
                 {ocrStatus === 'loading' ? 'Lendo Capa...' : 'Ler Capa (Câmera)'}
@@ -735,13 +723,13 @@ export default function App() {
               <input type="file" accept="image/*" capture="environment" ref={fileInputRef} onChange={handleImageCapture} className="hidden" />
             </div>
 
-            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-sm uppercase text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">✓ Campos preenchidos automaticamente! Por favor, revise.</div>}
-            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-sm uppercase text-white shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">⚠ Erro ao processar a imagem. Tente novamente ou preencha manualmente.</div>}
+            {ocrStatus === 'success' && <div className="mb-6 p-3 bg-[#00bcd4] border-[3px] border-black font-black text-xs md:text-sm uppercase text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">✓ Campos preenchidos automaticamente! Por favor, revise.</div>}
+            {ocrStatus === 'error' && <div className="mb-6 p-3 bg-[#c2185b] border-[3px] border-black font-black text-xs md:text-sm uppercase text-white shadow-[3px_3px_0px_0px_rgba(0,0,0,1)]">⚠ Erro ao processar a imagem. Tente novamente ou preencha manualmente.</div>}
 
             {showConfirm ? (
               <div className="flex flex-col gap-6 animate-in fade-in duration-300">
-                <h2 className="text-3xl font-black uppercase text-[#c2185b] mb-2 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-sm md:text-base">
+                <h2 className="text-2xl md:text-3xl font-black uppercase text-[#c2185b] mb-2 border-b-[6px] border-black pb-2">Confirmar Registro</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 font-mono text-xs md:text-base">
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
@@ -755,93 +743,93 @@ export default function App() {
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Código Classificação IFES/SIGA:</strong> <br/>{formData.codigo || '-'}</div>
                 </div>
                 <div className="flex flex-col md:flex-row gap-4 mt-4">
-                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Salvar na Planilha</button>
-                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[6px] border-black py-4 font-black uppercase tracking-wider text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Voltar e Editar</button>
+                   <button onClick={confirmAndSubmit} className="flex-1 bg-[#00bcd4] border-[4px] md:border-[6px] border-black py-4 font-black uppercase tracking-wider text-sm md:text-xl hover:bg-cyan-300 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Salvar na Planilha</button>
+                   <button onClick={() => setShowConfirm(false)} className="flex-1 bg-white border-[4px] md:border-[6px] border-black py-4 font-black uppercase tracking-wider text-sm md:text-xl hover:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none">Voltar e Editar</button>
                 </div>
               </div>
             ) : (
-              <form onSubmit={handlePreSubmit} className="flex flex-col gap-8">
+              <form onSubmit={handlePreSubmit} className="flex flex-col gap-6 md:gap-8">
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 bg-[#e0f7fa] p-4 md:p-6 border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">ID Pacote *</label>
-                    <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase" />
+                    <label className="font-black text-black uppercase tracking-wide text-xs">ID Pacote *</label>
+                    <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm md:text-lg font-mono focus:outline-none focus:bg-white uppercase" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID Item *</label>
-                    <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase" />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                  <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Centro</label>
-                    <input type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase" />
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Origem</label>
-                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold" />
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">ID Item *</label>
+                    <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm md:text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase" />
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 bg-[#ffe082] p-4 md:p-6 border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Centro</label>
+                    <input type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm focus:outline-none focus:bg-white font-bold uppercase" />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Origem</label>
+                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm focus:outline-none focus:bg-white font-bold" />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-4 md:gap-6 p-4 md:p-6 border-[4px] md:border-[6px] border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Escopo e Conteúdo (Assunto / Disciplina) *</label>
-                    <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-[#e0f7fa]" />
+                    <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-[#e0f7fa]" />
                   </div>
                   
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Produtor / Requerente / Estudante Principal *</label>
-                    <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-[#ffe082]" />
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Produtor / Requerente / Estudante Principal *</label>
+                    <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-[#ffe082]" />
                   </div>
 
-                  <details className="w-full border-[4px] border-black bg-white group cursor-pointer mt-4">
-                    <summary className="font-black text-black uppercase tracking-wide text-xs p-4 bg-gray-100 group-open:border-b-[4px] border-black hover:bg-gray-200 transition-colors">
-                      ▶ Pontos de Acesso Secundários (Orientador, Coautores...)
+                  <details className="w-full border-[3px] border-black bg-white group cursor-pointer mt-2">
+                    <summary className="font-black text-black uppercase tracking-wide text-[10px] md:text-xs p-3 md:p-4 bg-gray-100 group-open:border-b-[3px] border-black hover:bg-gray-200 transition-colors">
+                      ▶ Pontos de Acesso Adicionais (Orientador, Coautores...)
                     </summary>
-                    <div className="p-6 flex flex-col gap-4 bg-white cursor-default">
+                    <div className="p-4 md:p-6 flex flex-col gap-4 bg-white cursor-default">
                       <div className="flex flex-col gap-2">
-                        <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) / Professor(a)</label>
-                        <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-pink-50" />
+                        <label className="font-black text-black uppercase tracking-wide text-xs text-gray-700">Orientador(a) / Professor(a)</label>
+                        <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-pink-50" />
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="flex flex-col gap-2">
-                          <label className="font-black text-black uppercase tracking-wide text-xs text-gray-500">Estudante 2</label>
-                          <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-50" />
+                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Estudante 2</label>
+                          <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
                         </div>
                         <div className="flex flex-col gap-2">
-                          <label className="font-black text-black uppercase tracking-wide text-xs text-gray-500">Estudante 3</label>
-                          <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-50" />
+                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Estudante 3</label>
+                          <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
                         </div>
                       </div>
                     </div>
                   </details>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 bg-[#f8bbd0] p-4 md:p-6 border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Tipo Documental</label>
-                    <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" />
+                    <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-white" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Série Documental</label>
-                    <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" />
+                    <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-white" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Data do Documento (Ano-Mês) *</label>
-                    <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-black focus:outline-none focus:bg-white uppercase" placeholder="Ex: 2008-11" />
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Data do Documento (Texto Livre) *</label>
+                    <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-black focus:outline-none focus:bg-white uppercase" placeholder="Ex: 1998, 2010-05, 1990 ~ 2000" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código de Classificação IFES/SIGA</label>
-                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" placeholder="Selecione ou digite..." />
+                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-white" placeholder="Selecione ou digite..." />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações</label>
-                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none" />
+                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-white resize-none" />
                   </div>
                 </div>
 
-                <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[6px] border-black py-5 font-black text-2xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-1 disabled:translate-x-1">
+                <button type="submit" disabled={status === 'loading'} className="mt-2 w-full bg-[#c2185b] text-white border-[4px] md:border-[6px] border-black py-4 md:py-5 font-black text-xl md:text-3xl uppercase tracking-wider hover:bg-[#d81b60] shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] active:translate-y-1 active:translate-x-1 active:shadow-none transition-all disabled:opacity-50 disabled:shadow-none disabled:translate-y-1 disabled:translate-x-1">
                   {status === 'loading' ? 'Verificando...' : 'Revisar Informações'}
                 </button>
               </form>
@@ -849,41 +837,40 @@ export default function App() {
           </div>
         )}
 
-        {/* Aba do Acervo para Listagem */}
         {}
         {activeTab === 'acervo' && (
-          <div className="p-6 md:p-8 flex flex-col bg-white min-h-[500px]">
-            <div className="flex justify-between items-center mb-6">
-               <h2 className="text-xl font-black uppercase tracking-widest text-[#c2185b]">Inventário do Acervo</h2>
-               <div className="flex border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] bg-white">
-                 <button onClick={() => setViewMode('list')} className={`px-4 py-2 font-black uppercase text-xs transition-colors ${viewMode === 'list' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Lista</button>
+          <div className="p-4 md:p-8 flex flex-col bg-white min-h-[500px]">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+               <h2 className="text-xl md:text-2xl font-black uppercase tracking-widest text-[#c2185b]">Inventário do Acervo</h2>
+               <div className="flex border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] bg-white w-full md:w-auto">
+                 <button onClick={() => setViewMode('list')} className={`flex-1 md:flex-none px-4 py-3 font-black uppercase text-xs transition-colors ${viewMode === 'list' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Tabela</button>
                  <div className="w-[4px] bg-black"></div>
-                 <button onClick={() => setViewMode('card')} className={`px-4 py-2 font-black uppercase text-xs transition-colors ${viewMode === 'card' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Cards</button>
+                 <button onClick={() => setViewMode('card')} className={`flex-1 md:flex-none px-4 py-3 font-black uppercase text-xs transition-colors ${viewMode === 'card' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Cards</button>
                </div>
             </div>
 
             {fetchError && (
               <div className="mb-6 bg-red-200 border-[4px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                <p className="font-black text-red-900 uppercase">⚠ Erro:</p><p className="font-bold text-sm mt-1">{fetchError}</p>
+                <p className="font-black text-red-900 uppercase text-sm">⚠ Erro:</p><p className="font-bold text-xs mt-1">{fetchError}</p>
               </div>
             )}
             
             {loadingList ? (
               <div className="flex-1 flex items-center justify-center min-h-[300px]">
-                <p className="font-black text-2xl uppercase animate-pulse text-[#00bcd4]">Consultando Banco de Dados...</p>
+                <p className="font-black text-lg md:text-2xl uppercase animate-pulse text-[#00bcd4]">Consultando Banco de Dados...</p>
               </div>
             ) : sortedItems.length === 0 ? (
-              <div className="flex-1 flex items-center justify-center p-10 bg-gray-50 border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-                <p className="font-black text-xl uppercase text-gray-400">O Acervo está Vazio.</p>
+              <div className="flex-1 flex items-center justify-center p-6 md:p-10 bg-gray-50 border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <p className="font-black text-sm md:text-xl uppercase text-gray-400 text-center">O Acervo está Vazio.</p>
               </div>
             ) : viewMode === 'list' ? (
-              <div className="border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] overflow-hidden">
-                <div className="max-h-[60vh] overflow-y-auto">
+              <div className="border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] overflow-hidden">
+                <div className="max-h-[60vh] overflow-x-auto overflow-y-auto">
                   <table className="w-full text-left border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-[#00bcd4] text-black shadow-sm">
                         {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data doc", "Código Class."].map((header) => (
-                          <th key={header} onClick={() => handleSort(header === "Data doc" ? "Data do documento" : header === "Código Class." ? "Código de Classificação" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-[10px] md:text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0 whitespace-nowrap">
+                          <th key={header} onClick={() => handleSort(header === "Data doc" ? "Data do documento" : header === "Código Class." ? "Código de Classificação" : header)} className="border-b-[4px] md:border-b-[6px] border-r-[3px] border-black p-3 md:p-4 font-black uppercase text-[9px] md:text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0 whitespace-nowrap">
                             {header} {sortConfig.key === (header === "Data doc" ? "Data do documento" : header === "Código Class." ? "Código de Classificação" : header) && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                           </th>
                         ))}
@@ -891,19 +878,19 @@ export default function App() {
                     </thead>
                     <tbody className="bg-gray-50">
                         {sortedItems.map((item, idx) => (
-                          <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0 text-sm">
-                            <td className="p-4 font-mono text-[10px] border-r-[4px] border-black whitespace-nowrap">{formatDateTime(item["Data de análise"])}</td>
-                            <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black whitespace-nowrap">{item["ID Item"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[80px]">{item["Centro"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[120px]">{item["Origem"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[150px]">{item["Produtor"] || item["Estudante 1"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black min-w-[200px]" title={item["Escopo e Conteúdo"] || item["Disciplina"]}>{(item["Escopo e Conteúdo"] || item["Disciplina"])?.substring(0,60)}{((item["Escopo e Conteúdo"] || item["Disciplina"])?.length > 60 ? '...' : '')}</td>
-                            <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082] whitespace-nowrap">
-                                {item["Data do documento"] && item["Data do documento"].includes('-') ? item["Data do documento"].split('-').reverse().join('/') : item["Data do documento"]}
+                          <tr key={idx} className="hover:bg-yellow-100 border-b-[3px] border-black last:border-b-0 text-xs md:text-sm">
+                            <td className="p-3 font-mono text-[9px] border-r-[3px] border-black whitespace-nowrap">{formatDateTime(item["Data de análise"])}</td>
+                            <td className="p-3 font-black text-[#c2185b] border-r-[3px] border-black whitespace-nowrap">{item["ID Item"]}</td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[60px] md:max-w-[80px]">{item["Centro"]}</td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[80px] md:max-w-[120px]">{item["Origem"]}</td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[100px] md:max-w-[150px]">{item["Produtor"]}</td>
+                            <td className="p-3 font-bold border-r-[3px] border-black min-w-[150px] md:min-w-[200px]" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,60)}{(item["Escopo e Conteúdo"]?.length > 60 ? '...' : '')}</td>
+                            <td className="p-3 font-black border-r-[3px] border-black bg-[#ffe082] whitespace-nowrap">
+                                {item["Data do documento"]}
                             </td>
-                            <td className="p-4">
+                            <td className="p-2 md:p-3">
                                 {item["Código de Classificação"] ? (
-                                    <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[150px] block" title={item["Código de Classificação"]}>
+                                    <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="text-[9px] md:text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[120px] md:max-w-[150px] block" title={item["Código de Classificação"]}>
                                         {item["Código de Classificação"]}
                                     </button>
                                 ) : '--'}
@@ -915,24 +902,24 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 animate-in fade-in duration-300">
                  {sortedItems.map((item, idx) => (
-                    <div key={idx} className="border-[6px] border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] bg-white flex flex-col h-full hover:-translate-y-1 hover:-translate-x-1 transition-transform">
+                    <div key={idx} className="border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] bg-white flex flex-col h-full hover:-translate-y-1 hover:-translate-x-1 transition-transform">
                        <div className="p-3 bg-[#c2185b] border-b-[4px] border-black flex justify-between items-center text-white">
-                           <span className="font-black text-lg tracking-wider">{item["ID Item"]}</span>
-                           <span className="font-mono text-[9px] bg-black px-2 py-1">{item["Data do documento"]}</span>
+                           <span className="font-black text-base md:text-lg tracking-wider">{item["ID Item"]}</span>
+                           <span className="font-mono text-[9px] md:text-[10px] bg-black px-2 py-1">{item["Data do documento"]}</span>
                        </div>
                        <div className="p-4 flex-1 flex flex-col gap-2">
-                           <div className="flex gap-2 font-bold text-xs uppercase tracking-widest text-gray-500 mb-2">
+                           <div className="flex gap-2 font-bold text-[10px] md:text-xs uppercase tracking-widest text-gray-500 mb-2">
                               <span className="bg-[#ffe082] text-black px-2 py-0.5 border-[2px] border-black">{item["Centro"]}</span>
                               <span className="truncate">{item["Origem"]}</span>
                            </div>
-                           <h3 className="font-black text-base leading-tight">{item["Escopo e Conteúdo"] || item["Disciplina"]}</h3>
-                           <div className="text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-xs uppercase">Produtor:</span> {item["Produtor"] || item["Estudante 1"] || '--'}</div>
+                           <h3 className="font-black text-sm md:text-base leading-tight">{item["Escopo e Conteúdo"]}</h3>
+                           <div className="text-xs md:text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-[10px] uppercase">Produtor:</span> {item["Produtor"] || '--'}</div>
                        </div>
-                       <div className="p-3 bg-gray-100 border-t-[4px] border-black flex flex-col gap-1 text-[10px] font-black uppercase">
+                       <div className="p-3 bg-gray-100 border-t-[4px] border-black flex flex-col gap-1 text-[9px] md:text-[10px] font-black uppercase">
                            {item["Código de Classificação"] ? (
-                               <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="bg-white border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Ver Resumo">
+                               <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="bg-white border-[2px] border-black px-2 py-1.5 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Ver Resumo">
                                   🏷️ {item["Código de Classificação"]}
                                </button>
                            ) : <span className="opacity-50">Sem Código</span>}
@@ -944,43 +931,43 @@ export default function App() {
           </div>
         )}
 
-        {/* Aba de Dashboard */}
+        {}
         {activeTab === 'dashboard' && (
           <div className="p-4 md:p-8 flex flex-col bg-[#e0f7fa] min-h-[500px]">
             {loadingList ? (
                <div className="flex-1 flex items-center justify-center">
-                 <p className="font-black text-2xl uppercase animate-pulse text-[#00bcd4]">Processando Estatísticas...</p>
+                 <p className="font-black text-lg md:text-2xl uppercase animate-pulse text-[#00bcd4]">Processando Estatísticas...</p>
                </div>
             ) : items.length === 0 ? (
-               <div className="flex-1 flex items-center justify-center p-10 bg-white border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
-                 <p className="font-black text-xl uppercase text-gray-400">Acervo vazio. Registre itens para ver os gráficos.</p>
+               <div className="flex-1 flex items-center justify-center p-6 md:p-10 bg-white border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                 <p className="font-black text-sm md:text-xl uppercase text-gray-400 text-center">Acervo vazio. Registre itens para ver os gráficos.</p>
                </div>
             ) : (
                <div className="flex flex-col gap-6 animate-in fade-in duration-500">
                  
                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                   <div className="min-h-[400px]">
+                   <div className="w-full">
                      <PieChart data={dashboardStats.origem} title="Acervo por Origem" />
                    </div>
-                   <div className="min-h-[400px]">
+                   <div className="w-full">
                      <PieChart data={dashboardStats.decada} title="Acervo por Décadas" />
                    </div>
                  </div>
 
                  <div className="grid grid-cols-1 gap-6">
-                   <div className="min-h-[350px]">
+                   <div className="w-full">
                      <BarChart data={dashboardStats.mesAno} title="Acervo Mês a Mês" color="#c2185b" />
                    </div>
-                   <div className="min-h-[350px]">
+                   <div className="w-full">
                      <BarChart data={dashboardStats.ano} title="Acervo Ano a Ano" color="#ffb300" />
                    </div>
                  </div>
 
                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                   <div className="min-h-[400px] lg:col-span-1">
+                   <div className="w-full lg:col-span-1">
                      <PieChart data={dashboardStats.codigo} title="Códigos Analisados" />
                    </div>
-                   <div className="min-h-[400px] lg:col-span-2">
+                   <div className="w-full lg:col-span-2">
                      <BarChart data={dashboardStats.codigo} title="Volume por Código de Classificação" color="#00bcd4" />
                    </div>
                  </div>
