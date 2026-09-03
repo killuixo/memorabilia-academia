@@ -16,25 +16,39 @@ const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
 // ==========================================
 // FUNÇÕES UTILITÁRIAS
 // ==========================================
-const formatDateTime = (str) => {
+const cleanDateTimeStr = (str) => {
   if (!str) return '--';
-  // Bloqueia e converte o fuso horário gigante do Google Sheets (ex: Wed Sep 02 2026 ... GMT-0300)
-  if (str.includes('GMT') || str.includes('Horário Padrão')) {
+  const s = str.toString();
+  // Se for uma data gigantesca do Google Sheets com GMT ou dias da semana em inglês
+  if (s.length > 20 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
     try {
-      const d = new Date(str);
-      if (!isNaN(d.getTime())) {
-        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      }
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     } catch(e) {}
   }
-  // Se for uma data ISO
-  if (str.includes('T') && str.includes('Z')) {
+  return s;
+};
+
+const cleanDateStr = (str) => {
+  if (!str) return '--';
+  const s = str.toString();
+  // Se for a data injetada pelo Google Sheets, expurga a hora e o fuso
+  if (s.length > 20 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
+    try {
+      const d = new Date(s);
+      // Força UTC para evitar que o fuso horário atrase o dia em 1
+      if (!isNaN(d.getTime())) return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' }); 
+    } catch(e) {}
+  }
+  // Se for ISO
+  if (s.includes('T') && s.includes('Z')) {
       try {
-          const d = new Date(str);
-          return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+          const d = new Date(s);
+          return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
       } catch(e) {}
   }
-  return str;
+  // Se for apenas texto livre (1990 ~ 2000), devolve do jeito que está
+  return s;
 };
 
 const resizeImageForOCR = (file, maxWidth = 1200) => {
@@ -353,17 +367,17 @@ const BarChart = ({ data, title, color = "#00bcd4" }) => {
   const maxVal = Math.max(...data.map(d => d.value), 1);
 
   return (
-    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
+    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-[350px] md:h-[400px]">
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       {data.length === 0 ? (
-         <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400 min-h-[250px]">Sem dados</div>
+         <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400">Sem dados</div>
       ) : (
-        <div className="flex-1 flex items-end justify-start w-full gap-4 border-b-[4px] border-l-[4px] border-black pb-24 pt-8 pl-2 overflow-x-auto relative">
+        <div className="flex-1 flex items-end justify-start w-full gap-4 border-b-[4px] border-l-[4px] border-black pb-28 pt-8 pl-2 overflow-x-auto overflow-y-visible relative h-full">
           {data.map((item, idx) => (
             <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] md:min-w-[40px] h-full group relative">
-              <span className="absolute -top-6 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-10">{item.value}</span>
+              <span className="absolute -top-6 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-10 rounded">{item.value}</span>
               <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity relative" style={{ height: `${Math.max((item.value / maxVal) * 100, 2)}%`, backgroundColor: color }}></div>
-              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left flex items-start w-[80px]">
+              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left flex items-start w-[100px]">
                   <span className="text-[9px] md:text-[10px] font-black uppercase truncate w-full text-right" title={item.label}>
                      {item.label}
                   </span>
@@ -386,7 +400,9 @@ export default function App() {
   const [loadingList, setLoadingList] = useState(false);
   const [fetchError, setFetchError] = useState('');
   const [viewMode, setViewMode] = useState('list'); 
-  const [selectedCodigo, setSelectedCodigo] = useState(null); 
+  
+  // Estado Universal para Filtros e Modais
+  const [modalFilter, setModalFilter] = useState(null); 
 
   const initialFormState = {
     pacote: '', idItem: '', centro: '', origem: '',
@@ -569,17 +585,10 @@ export default function App() {
       const origem = item["Origem"] || "Não Informado";
       stats.origem[origem] = (stats.origem[origem] || 0) + 1;
 
-      const dataStr = item["Data do documento"];
-      if (dataStr) {
-        let cleanDate = dataStr;
-        if (cleanDate.includes('GMT')) {
-           try {
-               const d = new Date(cleanDate);
-               if (!isNaN(d.getTime())) cleanDate = d.toISOString().substring(0,7);
-           } catch(e) {}
-        }
-
-        const yearMatch = cleanDate.match(/\b(19\d{2}|20\d{2})\b/);
+      // Passa a data do documento pelo limpador antes de agrupar!
+      const dataStr = cleanDateStr(item["Data do documento"]);
+      if (dataStr && dataStr !== '--') {
+        const yearMatch = dataStr.match(/\b(19\d{2}|20\d{2})\b/);
         if (yearMatch) {
             const ano = yearMatch[1];
             stats.ano[ano] = (stats.ano[ano] || 0) + 1;
@@ -587,7 +596,7 @@ export default function App() {
             stats.decada[`${decada}s`] = (stats.decada[`${decada}s`] || 0) + 1;
         }
 
-        const mesAnoLabel = cleanDate.substring(0, 20); // Impede que a string quebre o layout
+        const mesAnoLabel = dataStr.substring(0, 20); 
         stats.mesAno[mesAnoLabel] = (stats.mesAno[mesAnoLabel] || 0) + 1;
       }
 
@@ -609,28 +618,39 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-4 md:py-6 px-2 md:px-4 font-sans selection:bg-[#ffb300]">
       
-      {/* Modal Ficha Resumo do Código de Classificação */}
-      {selectedCodigo && (
+      {/* Modal Ficha Resumo Universal */}
+      {}
+      {modalFilter && (
         <div className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
            <div className="bg-white border-[8px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] w-full max-w-5xl max-h-[90vh] flex flex-col">
               <div className="p-4 bg-[#00bcd4] text-black flex justify-between items-start md:items-center border-b-[6px] border-black flex-col md:flex-row gap-4">
                  <div>
-                    <h2 className="font-black uppercase text-xs md:text-sm tracking-widest opacity-80">Ficha Resumo da Classificação</h2>
-                    <h3 className="font-black text-lg md:text-2xl mt-1 leading-tight">{selectedCodigo}</h3>
+                    <h2 className="font-black uppercase text-xs md:text-sm tracking-widest opacity-80">Ficha Resumo: {modalFilter.label}</h2>
+                    <h3 className="font-black text-lg md:text-2xl mt-1 leading-tight">{modalFilter.value}</h3>
                  </div>
-                 <button onClick={() => setSelectedCodigo(null)} className="w-12 h-12 flex-shrink-0 border-[4px] border-black bg-white font-black text-xl hover:bg-red-500 hover:text-white transition-colors active:translate-y-1 active:translate-x-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none">X</button>
+                 <button onClick={() => setModalFilter(null)} className="w-12 h-12 flex-shrink-0 border-[4px] border-black bg-white font-black text-xl hover:bg-red-500 hover:text-white transition-colors active:translate-y-1 active:translate-x-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none">X</button>
               </div>
               <div className="p-4 overflow-y-auto bg-gray-50 flex-1">
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {items.filter(i => i["Código de Classificação"] === selectedCodigo).map((item, idx) => (
+                    {items.filter(i => i[modalFilter.key] === modalFilter.value).map((item, idx) => (
                        <div key={idx} className="border-[4px] border-black bg-white p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col gap-2 text-sm">
                           <div className="flex justify-between border-b-[2px] border-black pb-2">
                              <span className="font-black text-[#c2185b]">{item["ID Item"]}</span>
-                             <span className="font-bold">{item["Data do documento"]}</span>
+                             <span className="font-bold">{cleanDateStr(item["Data do documento"])}</span>
                           </div>
-                          <div className="font-bold uppercase tracking-wider">{item["Origem"]}</div>
+                          <div className="font-bold uppercase tracking-wider">{item["Centro"]} - {item["Origem"]}</div>
                           <div className="font-black text-lg leading-tight">{item["Escopo e Conteúdo"]}</div>
-                          <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-50">Produtor:</span> {item["Produtor"] || '--'}</div>
+                          <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2 flex flex-col gap-1">
+                              <div><span className="opacity-50">Produtor:</span> {item["Produtor"] || '--'}</div>
+                              {(item["Tipo Documental"] || item["Série"]) && (
+                                 <div className="text-[10px] text-gray-500 font-bold">{item["Tipo Documental"]} • {item["Série"]}</div>
+                              )}
+                          </div>
+                          {item["Código de Classificação"] && (
+                              <div className="mt-2 text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 w-fit">
+                                  🏷️ {item["Código de Classificação"]}
+                              </div>
+                          )}
                        </div>
                     ))}
                  </div>
@@ -879,18 +899,24 @@ export default function App() {
                     <tbody className="bg-gray-50">
                         {sortedItems.map((item, idx) => (
                           <tr key={idx} className="hover:bg-yellow-100 border-b-[3px] border-black last:border-b-0 text-xs md:text-sm">
-                            <td className="p-3 font-mono text-[9px] border-r-[3px] border-black whitespace-nowrap">{formatDateTime(item["Data de análise"])}</td>
+                            <td className="p-3 font-mono text-[9px] border-r-[3px] border-black whitespace-nowrap">{cleanDateTimeStr(item["Data de análise"])}</td>
                             <td className="p-3 font-black text-[#c2185b] border-r-[3px] border-black whitespace-nowrap">{item["ID Item"]}</td>
-                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[60px] md:max-w-[80px]">{item["Centro"]}</td>
-                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[80px] md:max-w-[120px]">{item["Origem"]}</td>
-                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[100px] md:max-w-[150px]">{item["Produtor"]}</td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[60px] md:max-w-[80px]">
+                                <span onClick={() => setModalFilter({key: 'Centro', value: item["Centro"], label: 'Centro'})} className="cursor-pointer hover:bg-cyan-200 px-1 rounded transition-colors inline-block" title="Filtrar por Centro">{item["Centro"]}</span>
+                            </td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[80px] md:max-w-[120px]">
+                                <span onClick={() => setModalFilter({key: 'Origem', value: item["Origem"], label: 'Origem'})} className="cursor-pointer hover:bg-cyan-200 px-1 rounded transition-colors inline-block" title="Filtrar por Origem">{item["Origem"]}</span>
+                            </td>
+                            <td className="p-3 font-bold border-r-[3px] border-black truncate max-w-[100px] md:max-w-[150px]">
+                                <span onClick={() => setModalFilter({key: 'Produtor', value: item["Produtor"], label: 'Produtor'})} className="cursor-pointer hover:bg-cyan-200 px-1 rounded transition-colors inline-block" title="Filtrar por Produtor">{item["Produtor"]}</span>
+                            </td>
                             <td className="p-3 font-bold border-r-[3px] border-black min-w-[150px] md:min-w-[200px]" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,60)}{(item["Escopo e Conteúdo"]?.length > 60 ? '...' : '')}</td>
                             <td className="p-3 font-black border-r-[3px] border-black bg-[#ffe082] whitespace-nowrap">
-                                {item["Data do documento"]}
+                                {cleanDateStr(item["Data do documento"])}
                             </td>
                             <td className="p-2 md:p-3">
                                 {item["Código de Classificação"] ? (
-                                    <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="text-[9px] md:text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[120px] md:max-w-[150px] block" title={item["Código de Classificação"]}>
+                                    <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"], label: 'Código de Classificação'})} className="text-[9px] md:text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[120px] md:max-w-[150px] block" title={item["Código de Classificação"]}>
                                         {item["Código de Classificação"]}
                                     </button>
                                 ) : '--'}
@@ -907,19 +933,27 @@ export default function App() {
                     <div key={idx} className="border-[4px] md:border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] bg-white flex flex-col h-full hover:-translate-y-1 hover:-translate-x-1 transition-transform">
                        <div className="p-3 bg-[#c2185b] border-b-[4px] border-black flex justify-between items-center text-white">
                            <span className="font-black text-base md:text-lg tracking-wider">{item["ID Item"]}</span>
-                           <span className="font-mono text-[9px] md:text-[10px] bg-black px-2 py-1">{item["Data do documento"]}</span>
+                           <span className="font-mono text-[9px] md:text-[10px] bg-black px-2 py-1">{cleanDateStr(item["Data do documento"])}</span>
                        </div>
                        <div className="p-4 flex-1 flex flex-col gap-2">
                            <div className="flex gap-2 font-bold text-[10px] md:text-xs uppercase tracking-widest text-gray-500 mb-2">
-                              <span className="bg-[#ffe082] text-black px-2 py-0.5 border-[2px] border-black">{item["Centro"]}</span>
-                              <span className="truncate">{item["Origem"]}</span>
+                              <span onClick={() => setModalFilter({key: 'Centro', value: item["Centro"], label: 'Centro'})} className="bg-[#ffe082] text-black px-2 py-0.5 border-[2px] border-black cursor-pointer hover:bg-yellow-400">{item["Centro"]}</span>
+                              <span onClick={() => setModalFilter({key: 'Origem', value: item["Origem"], label: 'Origem'})} className="truncate cursor-pointer hover:underline hover:text-black">{item["Origem"]}</span>
                            </div>
                            <h3 className="font-black text-sm md:text-base leading-tight">{item["Escopo e Conteúdo"]}</h3>
-                           <div className="text-xs md:text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-[10px] uppercase">Produtor:</span> {item["Produtor"] || '--'}</div>
+                           <div className="text-xs md:text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-[10px] uppercase">Produtor:</span> <span onClick={() => setModalFilter({key: 'Produtor', value: item["Produtor"], label: 'Produtor'})} className="cursor-pointer hover:text-black hover:underline">{item["Produtor"] || '--'}</span></div>
+                           
+                           {/* Adiciona link pros tipos documentais nas notas de rodapé */}
+                           {(item["Tipo Documental"] || item["Série"]) && (
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                 {item["Tipo Documental"] && <span onClick={() => setModalFilter({key: 'Tipo Documental', value: item["Tipo Documental"], label: 'Tipo Documental'})} className="text-[9px] font-bold bg-gray-200 px-1 border border-black cursor-pointer hover:bg-gray-300">{item["Tipo Documental"]}</span>}
+                                 {item["Série"] && <span onClick={() => setModalFilter({key: 'Série', value: item["Série"], label: 'Série'})} className="text-[9px] font-bold bg-gray-200 px-1 border border-black cursor-pointer hover:bg-gray-300">{item["Série"]}</span>}
+                              </div>
+                           )}
                        </div>
                        <div className="p-3 bg-gray-100 border-t-[4px] border-black flex flex-col gap-1 text-[9px] md:text-[10px] font-black uppercase">
                            {item["Código de Classificação"] ? (
-                               <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="bg-white border-[2px] border-black px-2 py-1.5 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Ver Resumo">
+                               <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"], label: 'Código de Classificação'})} className="bg-white border-[2px] border-black px-2 py-1.5 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Filtrar por Código">
                                   🏷️ {item["Código de Classificação"]}
                                </button>
                            ) : <span className="opacity-50">Sem Código</span>}
