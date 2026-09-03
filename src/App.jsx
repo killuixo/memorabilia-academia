@@ -318,24 +318,46 @@ const PieChart = ({ data, title }) => {
   const total = data.reduce((acc, item) => acc + item.value, 0);
   if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400 border-[4px] border-black h-full bg-white flex items-center justify-center">Sem dados para {title}</div>;
 
-  let currentAngle = 0;
   const slices = data.map((item, idx) => {
       const percentage = (item.value / total) * 100;
-      const startAngle = currentAngle;
-      const endAngle = currentAngle + percentage;
-      currentAngle = endAngle;
-      return { ...item, percentage, color: `hsl(${(idx * 360) / Math.max(1, data.length)}, 70%, 50%)` };
+      // Gera cores bem distintas para o gráfico
+      const color = `hsl(${(idx * 360) / Math.max(1, data.length)}, 70%, 50%)`;
+      return { ...item, percentage, color };
   });
+
+  let cumulativePercent = 0;
 
   return (
     <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       <div className="flex flex-col md:flex-row items-center gap-6 justify-center flex-1">
-        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0 rounded-full border-[4px] border-black" style={{ background: `conic-gradient(${slices.map(s => `${s.color} ${s.startAngle}% ${s.endAngle}%`).join(', ')})` }}>
-          <div className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 bg-white rounded-full border-[4px] border-black flex items-center justify-center">
+        
+        {/* Gráfico de Pizza em SVG (100% compatível com navegadores mobile) */}
+        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0 rounded-full border-[4px] border-black overflow-hidden bg-white">
+          <svg viewBox="0 0 32 32" className="absolute inset-0 w-full h-full transform -rotate-90">
+            {slices.map((slice, idx) => {
+              const dasharray = `${slice.percentage} ${100 - slice.percentage}`;
+              const dashoffset = -cumulativePercent;
+              cumulativePercent += slice.percentage;
+              return (
+                <circle
+                  key={idx}
+                  cx="16" cy="16" r="15.915494309189533"
+                  fill="transparent"
+                  stroke={slice.color}
+                  strokeWidth="32"
+                  strokeDasharray={dasharray}
+                  strokeDashoffset={dashoffset}
+                />
+              );
+            })}
+          </svg>
+          {/* Círculo central branco para fazer o efeito "Donut" */}
+          <div className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 bg-white rounded-full border-[4px] border-black flex items-center justify-center z-10">
             <span className="font-black text-base md:text-xl">{total}</span>
           </div>
         </div>
+
         <div className="w-full flex flex-col gap-2 max-h-[150px] overflow-y-auto pr-2">
           {slices.map((item, idx) => (
             <div key={idx} className="flex justify-between items-center text-[10px] md:text-xs font-bold uppercase tracking-wider">
