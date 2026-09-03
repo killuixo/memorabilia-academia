@@ -14,8 +14,21 @@ const getGoogleScriptUrl = () => {
 const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
 
 // ==========================================
-// FUNÇÕES UTILITÁRIAS PARA A CÂMERA (OCR)
+// FUNÇÕES UTILITÁRIAS
 // ==========================================
+const formatDateTime = (str) => {
+  if (!str) return '';
+  // Se já for no formato curto DD/MM/YYYY, retorna direto
+  if (/^\d{2}\/\d{2}\/\d{4}/.test(str)) return str;
+  try {
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+          return d.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+      }
+  } catch(e) {}
+  return str.substring(0, 20);
+};
+
 const resizeImageForOCR = (file, maxWidth = 1200) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -45,7 +58,7 @@ const toTitleCase = (str) => {
 };
 
 // ==========================================
-// LÓGICA ARQUIVÍSTICA E EXTRAÇÃO DE CAPAS E PROCESSOS
+// LÓGICA ARQUIVÍSTICA (OCR CÂMERA)
 // ==========================================
 const parseExtractedText = (rawText) => {
   let parsed = { 
@@ -59,73 +72,88 @@ const parseExtractedText = (rawText) => {
     dataDocumento: '',
     tipoDocumental: '',
     serie: '',
-    codigo: ''
+    codigo: '',
+    observacoes: ''
   };
   
   const rawLines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
   const fullText = rawLines.join(' ');
   const upperFullText = fullText.toUpperCase();
 
-  // 1. Centro (Sua Sigla)
-  let centroLine = rawLines.find(l => /^CENTRO\b/i.test(l) || /\b(CCE|CED|CFH|CTC|CDS|CCB|CFM|CCS|CCJ|CCA|CSE)\b/i.test(l));
-  if (centroLine) {
-      let match = centroLine.match(/(?:-|–|—)\s*([A-Z]{3,4})\b/);
-      if (match) {
-          parsed.centro = match[1];
-      } else {
-          const upper = centroLine.toUpperCase();
-          if (upper.includes('COMUNICA') || upper.includes('EXPRESS')) parsed.centro = 'CCE';
-          else if (upper.includes('EDUCA')) parsed.centro = 'CED';
-          else if (upper.includes('FILOSOFIA') || upper.includes('HUMANAS')) parsed.centro = 'CFH';
-          else if (upper.includes('TECNOL')) parsed.centro = 'CTC';
-          else if (upper.includes('DESPORTO') || upper.includes('FISICA')) parsed.centro = 'CDS';
-          else if (upper.includes('BIOLOG')) parsed.centro = 'CCB';
-          else if (upper.includes('SAUDE') || upper.includes('SAÚDE')) parsed.centro = 'CCS';
-          else if (upper.includes('JURID') || upper.includes('DIREITO')) parsed.centro = 'CCJ';
-          else if (upper.includes('AGRAR')) parsed.centro = 'CCA';
-          else if (upper.includes('SOCIO') || upper.includes('ECONOM')) parsed.centro = 'CSE';
-          else {
-              let matchSigla = centroLine.match(/\b([A-Z]{3,4})\b/);
-              parsed.centro = matchSigla ? matchSigla[1] : '';
-          }
-      }
-  } else if (upperFullText.includes('MEN/CED') || upperFullText.includes('CED')) {
+  // EXTRAÇÃO DO NÚMERO DO PROCESSO
+  const processoMatch = fullText.match(/(23080\.\d{6}\/\d{4}-\d{2})/);
+  if (processoMatch) {
+      parsed.observacoes = `Processo ${processoMatch[1]}`;
+  }
+
+  // 1. Centro e Origem (Mapeamento Direto por Sigla MEN/CED)
+  if (/\bMEN\b/i.test(fullText) || upperFullText.includes('METODOLOGIA DE ENSINO')) {
+      parsed.origem = 'MEN';
       parsed.centro = 'CED';
-  } else if (upperFullText.includes('CCE')) {
-      parsed.centro = 'CCE';
-  } else if (upperFullText.includes('CFH')) {
-      parsed.centro = 'CFH';
+  } else {
+      let centroLine = rawLines.find(l => /^CENTRO\b/i.test(l) || /\b(CCE|CED|CFH|CTC|CDS|CCB|CFM|CCS|CCJ|CCA|CSE)\b/i.test(l));
+      if (centroLine) {
+          let match = centroLine.match(/(?:-|–|—)\s*([A-Z]{3,4})\b/);
+          if (match) {
+              parsed.centro = match[1];
+          } else {
+              const upper = centroLine.toUpperCase();
+              if (upper.includes('COMUNICA') || upper.includes('EXPRESS')) parsed.centro = 'CCE';
+              else if (upper.includes('EDUCA')) parsed.centro = 'CED';
+              else if (upper.includes('FILOSOFIA') || upper.includes('HUMANAS')) parsed.centro = 'CFH';
+              else if (upper.includes('TECNOL')) parsed.centro = 'CTC';
+              else if (upper.includes('DESPORTO') || upper.includes('FISICA')) parsed.centro = 'CDS';
+              else if (upper.includes('BIOLOG')) parsed.centro = 'CCB';
+              else if (upper.includes('SAUDE') || upper.includes('SAÚDE')) parsed.centro = 'CCS';
+              else if (upper.includes('JURID') || upper.includes('DIREITO')) parsed.centro = 'CCJ';
+              else if (upper.includes('AGRAR')) parsed.centro = 'CCA';
+              else if (upper.includes('SOCIO') || upper.includes('ECONOM')) parsed.centro = 'CSE';
+              else {
+                  let matchSigla = centroLine.match(/\b([A-Z]{3,4})\b/);
+                  parsed.centro = matchSigla ? matchSigla[1] : '';
+              }
+          }
+      } else if (upperFullText.includes('CED')) {
+          parsed.centro = 'CED';
+      } else if (upperFullText.includes('CCE')) {
+          parsed.centro = 'CCE';
+      } else if (upperFullText.includes('CFH')) {
+          parsed.centro = 'CFH';
+      }
   }
 
   // 2. Origem / Curso
-  let origemLine = rawLines.find(l => /^ORIGEM[:\s]*|^CURSO\b/i.test(l));
-  let deptoLine = rawLines.find(l => /^DEPARTAMENTO\b/i.test(l));
+  if (!parsed.origem) {
+      let origemLine = rawLines.find(l => /^ORIGEM[:\s]*|^CURSO\b/i.test(l));
+      let deptoLine = rawLines.find(l => /^DEPARTAMENTO\b/i.test(l));
 
-  if (origemLine) {
-     let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '');
-     textOrigem = textOrigem.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
-     parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
-  } else if (deptoLine) {
-     let textDepto = deptoLine.replace(/^DEPARTAMENTO(?: DE)?\s*/i, '');
-     parsed.origem = toTitleCase(textDepto.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
-  } else {
-     let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
-     if (cursoMatch) {
-       parsed.origem = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
-     } else if (upperFullText.includes('MEN/CED') || upperFullText.includes('METODOLOGIA DE ENSINO')) {
-       parsed.origem = 'Metodologia de Ensino';
-     }
+      if (origemLine) {
+         let textOrigem = origemLine.replace(/^(?:ORIGEM|CURSO(?: DE)?)[:\s]*/i, '');
+         textOrigem = textOrigem.replace(/\b(?:da|de)\s+(?:universidade|ufsc).*/i, '');
+         parsed.origem = toTitleCase(textOrigem.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
+      } else if (deptoLine) {
+         let textDepto = deptoLine.replace(/^DEPARTAMENTO(?: DE)?\s*/i, '');
+         parsed.origem = toTitleCase(textDepto.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
+      } else {
+         let cursoMatch = fullText.match(/curso\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/-]+?)(?:,|\.|\s+(?:da|de)\s+(?:universidade|ufsc)|$)/i);
+         if (cursoMatch) {
+           parsed.origem = toTitleCase(cursoMatch[1].replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
+         }
+      }
   }
 
   // 3. Produtor / Requerente / Estudante
-  let reqLine = rawLines.find(l => /(?:Requerente|Interessado)[:\s]*/i.test(l));
-  if (reqLine) {
-      // É capa de PROCESSO
-      let prodText = reqLine.replace(/^(?:Requerente|Interessado)[:\s]*/i, '');
+  let reqLineIndex = rawLines.findIndex(l => /^(?:Requerente|Interessado)[:\s]*/i.test(l));
+  if (reqLineIndex !== -1) {
+      let prodText = rawLines[reqLineIndex].replace(/^(?:Requerente|Interessado)[:\s]*/i, '').trim();
+      if (/23080\./.test(prodText) || prodText === '') {
+          if (rawLines[reqLineIndex + 1]) {
+              prodText = rawLines[reqLineIndex + 1].trim();
+          }
+      }
       prodText = prodText.split(/(?:-|–|—)/)[0];
       parsed.produtor = toTitleCase(prodText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   } else {
-      // É capa de RELATÓRIO
       let rawStudentIndex = rawLines.findIndex(l => /^(?:Acad[eê]mic[oa]s?\s*:?|Alun[oa]s?\s*:?)\b/i.test(l));
       let students = [];
       if (rawStudentIndex !== -1) {
@@ -143,7 +171,6 @@ const parseExtractedText = (rawText) => {
               }
           }
       } else {
-          // Busca no topo da página
           let topLines = rawLines.slice(0, 6).filter(l => !/UNIVERSIDADE|FEDERAL|CENTRO|CURSO|DISCIPLINA|TRABALHO|RELATÓRIO|SUMÁRIO|PROCESSO|"/i.test(l));
           for (let l of topLines) {
               let cleaned = l.split(/(?:-|–|—)/)[0].replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim();
@@ -165,26 +192,42 @@ const parseExtractedText = (rawText) => {
       parsed.orientador = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
-  // 5. Assunto / Disciplina (Agora Escopo e Conteúdo)
-  let assuntoIndex = rawLines.findIndex(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
-  if (assuntoIndex !== -1) {
-      let textAssunto = rawLines[assuntoIndex].replace(/^(?:Assunto|Detalhamento)[:\s]*/i, '');
-      // Continua capturando as próximas linhas caso o assunto seja longo, até bater em outro campo
-      for (let i = assuntoIndex + 1; i < rawLines.length; i++) {
-          if (/^(?:Palavra\s*Chave|Detalhamento|Origem|Requerente|Data|\d{2}-EST[ÁA]GIO|SUM[ÁA]RIO)/i.test(rawLines[i])) break;
-          textAssunto += ' ' + rawLines[i];
+  // 5. Escopo e Conteúdo (Assunto / Disciplina)
+  let assuntoTexto = '';
+  let origemDesalinhada = rawLines.find(l => /^Origem[:\s]*/i.test(l) && /PROGRESS[AÃ]O/i.test(l));
+
+  if (origemDesalinhada) {
+      assuntoTexto = origemDesalinhada.replace(/^Origem[:\s]*/i, '').trim();
+      let idx = rawLines.indexOf(origemDesalinhada);
+      if (rawLines[idx + 1] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 1])) {
+          assuntoTexto += ' ' + rawLines[idx + 1].trim();
       }
-      parsed.escopoConteudo = toTitleCase(textAssunto.trim());
+      if (rawLines[idx + 2] && !/^(?:Assunto|Palavra)/i.test(rawLines[idx + 2])) {
+          assuntoTexto += ' ' + rawLines[idx + 2].trim();
+      }
+  } else {
+      let assuntoIndex = rawLines.findIndex(l => /^(?:Assunto|Detalhamento)[:\s]*/i.test(l));
+      if (assuntoIndex !== -1) {
+          assuntoTexto = rawLines[assuntoIndex].replace(/^(?:Assunto|Detalhamento)[:\s]*/i, '');
+          for (let i = assuntoIndex + 1; i < rawLines.length; i++) {
+              if (/^(?:Palavra\s*Chave|Detalhamento|Origem|Requerente|Data|\d{2}-EST[ÁA]GIO|SUM[ÁA]RIO)/i.test(rawLines[i])) break;
+              assuntoTexto += ' ' + rawLines[i];
+          }
+      }
+  }
+
+  if (assuntoTexto) {
+      parsed.escopoConteudo = toTitleCase(assuntoTexto.replace(/[^a-zA-ZÀ-ÿ\s/.-]/g, '').trim());
   } else {
       let discLine = rawLines.find(l => /^DISCIPLINA[:\s]*/i.test(l));
-      let codDiscLine = rawLines.find(l => /^([A-Z]{3})\s*(\d{4})\s*[-–—]\s*(.+)/i.test(l)); // Captura MEN 1170 - NOME...
+      let codDiscLine = rawLines.find(l => /^([A-Z]{3})\s*(\d{4})\s*[-–—]\s*(.+)/i.test(l));
 
       if (discLine) {
          let textDisc = discLine.replace(/^DISCIPLINA[:\s]*/i, '').replace(/(?:-|–|—)\s*[A-Z]{3}\s*\d{4}.*/i, '');
          parsed.escopoConteudo = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       } else if (codDiscLine) {
          let match = codDiscLine.match(/^([A-Z]{3})\s*(\d{4})\s*[-–—]\s*(.+)/i);
-         let textDisc = match[3].replace(/(?:-|–|—)\s*\d+\s*cr[ée]ditos.*/i, ''); // Limpa os créditos do final
+         let textDisc = match[3].replace(/(?:-|–|—)\s*\d+\s*cr[ée]ditos.*/i, '');
          parsed.escopoConteudo = toTitleCase(textDisc.replace(/[^a-zA-ZÀ-ÿ\s/-]/g, '').trim());
       } else {
          let discMatch = fullText.match(/disciplina\s+(?:de\s+)?([a-zA-ZÀ-ÿ\s/IV]+?)(?:,|\.|\s+do curso|\s+da universidade|$)/i);
@@ -222,7 +265,6 @@ const parseExtractedText = (rawText) => {
           } else {
               let yearMatch = fullText.match(/\b(19\d{2}|20\d{2})\b/g);
               if (yearMatch) {
-                  // Pega o maior ano encontrado no texto (excelente para bibliografias de planos de ensino)
                   let maxYear = Math.max(...yearMatch.map(Number));
                   parsed.dataDocumento = `${maxYear}-01`;
               }
@@ -230,10 +272,10 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 7. Inteligência Arquivística (Tipo Documental, Série e Código IFES/Arquivo Nacional)
+  // 7. Inteligência Arquivística
   if (upperFullText.includes('PROGRESSÃO') || upperFullText.includes('PROGRESSAO') || upperFullText.includes('PROMOÇÃO') || upperFullText.includes('PROMOCAO')) {
       parsed.tipoDocumental = upperFullText.includes('MEMORIAL') ? 'Memorial Descritivo' : 'Processo Administrativo';
-      parsed.serie = 'Processos de Progressão Funcional';
+      parsed.serie = 'Avaliação de Desempenho - Progressão Funcional';
       parsed.codigo = "022.63 - Promoção e progressão funcional";
   } else if (upperFullText.includes('ESTÁGIO PROBATÓRIO') || upperFullText.includes('ESTAGIO PROBATORIO')) {
       parsed.tipoDocumental = upperFullText.includes('MEMORIAL') ? 'Memorial Descritivo' : 'Processo Administrativo';
@@ -274,7 +316,7 @@ const parseExtractedText = (rawText) => {
 // ==========================================
 const PieChart = ({ data, title }) => {
   const total = data.reduce((acc, item) => acc + item.value, 0);
-  if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400">Sem dados para {title}</div>;
+  if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400 border-[4px] border-black h-full bg-white flex items-center justify-center">Sem dados para {title}</div>;
 
   let currentAngle = 0;
   const slices = data.map((item, idx) => {
@@ -285,46 +327,46 @@ const PieChart = ({ data, title }) => {
       return { ...item, percentage, color: `hsl(${(idx * 360) / Math.max(1, data.length)}, 70%, 50%)` };
   });
 
-  const gradientString = slices.map(s => `${s.color} ${currentAngle - s.percentage}% ${currentAngle}%`).join(', ');
-
   return (
-    <div className="flex flex-col items-center bg-white p-4 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-full">
-      <h3 className="font-black text-sm uppercase tracking-widest mb-4 border-b-[2px] border-black w-full text-center pb-2">{title}</h3>
-      <div className="relative w-32 h-32 rounded-full border-[4px] border-black" style={{ background: `conic-gradient(${slices.map(s => `${s.color} ${s.startAngle}% ${s.endAngle}%`).join(', ')})` }}>
-        <div className="absolute inset-0 m-auto w-16 h-16 bg-white rounded-full border-[4px] border-black flex items-center justify-center">
-          <span className="font-black text-sm">{total}</span>
-        </div>
-      </div>
-      <div className="mt-4 w-full flex flex-col gap-1 max-h-32 overflow-y-auto pr-1">
-        {slices.map((item, idx) => (
-          <div key={idx} className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider">
-            <div className="flex items-center gap-2 truncate">
-              <div className="w-3 h-3 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
-              <span className="truncate" title={item.label}>{item.label}</span>
-            </div>
-            <span className="flex-shrink-0 ml-2">{item.value} ({item.percentage.toFixed(1)}%)</span>
+    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
+      <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
+      <div className="flex flex-col md:flex-row items-center gap-6 justify-center flex-1">
+        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0 rounded-full border-[4px] border-black" style={{ background: `conic-gradient(${slices.map(s => `${s.color} ${s.startAngle}% ${s.endAngle}%`).join(', ')})` }}>
+          <div className="absolute inset-0 m-auto w-16 h-16 md:w-20 md:h-20 bg-white rounded-full border-[4px] border-black flex items-center justify-center">
+            <span className="font-black text-base md:text-xl">{total}</span>
           </div>
-        ))}
+        </div>
+        <div className="w-full flex flex-col gap-2 max-h-[150px] overflow-y-auto pr-2">
+          {slices.map((item, idx) => (
+            <div key={idx} className="flex justify-between items-center text-[10px] md:text-xs font-bold uppercase tracking-wider">
+              <div className="flex items-center gap-2 truncate">
+                <div className="w-3 h-3 md:w-4 md:h-4 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
+                <span className="truncate" title={item.label}>{item.label}</span>
+              </div>
+              <span className="flex-shrink-0 ml-2 font-black">{item.value} <span className="opacity-50">({item.percentage.toFixed(1)}%)</span></span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
 };
 
-const BarChart = ({ data, title, color = "#00bcd4" }) => {
+const BarChart = ({ data, title, color = "#c2185b" }) => {
   const maxVal = Math.max(...data.map(d => d.value), 1);
 
   return (
-    <div className="flex flex-col items-center bg-white p-4 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-full">
-      <h3 className="font-black text-sm uppercase tracking-widest mb-4 border-b-[2px] border-black w-full text-center pb-2">{title}</h3>
+    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] h-full">
+      <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       {data.length === 0 ? (
-         <div className="p-4 text-center text-sm font-bold text-gray-400">Sem dados</div>
+         <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400">Sem dados</div>
       ) : (
-        <div className="flex items-end justify-start w-full h-40 gap-2 border-b-[4px] border-l-[4px] border-black pb-1 pl-1 overflow-x-auto">
+        <div className="flex-1 flex items-end justify-start w-full gap-2 border-b-[4px] border-l-[4px] border-black pb-12 pt-6 pl-2 overflow-x-auto relative">
           {data.map((item, idx) => (
-            <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] h-full group relative">
-              <span className="absolute -top-5 text-[9px] font-black opacity-0 group-hover:opacity-100 transition-opacity">{item.value}</span>
-              <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity" style={{ height: `${Math.max((item.value / maxVal) * 100, 5)}%`, backgroundColor: color }}></div>
-              <span className="text-[8px] font-black mt-1 uppercase -rotate-45 translate-y-3 truncate max-w-[40px] text-center">{item.label}</span>
+            <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] md:min-w-[40px] h-full group relative">
+              <span className="absolute -top-6 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-10">{item.value}</span>
+              <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity relative" style={{ height: `${Math.max((item.value / maxVal) * 100, 2)}%`, backgroundColor: color }}></div>
+              <span className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left text-[9px] font-black mt-1 uppercase whitespace-nowrap">{item.label}</span>
             </div>
           ))}
         </div>
@@ -342,6 +384,8 @@ export default function App() {
   const [sortConfig, setSortConfig] = useState({ key: 'Data de análise', direction: 'desc' });
   const [loadingList, setLoadingList] = useState(false);
   const [fetchError, setFetchError] = useState('');
+  const [viewMode, setViewMode] = useState('list'); // 'list' ou 'card'
+  const [selectedCodigo, setSelectedCodigo] = useState(null); // Para modal de Ficha Resumo
 
   const initialFormState = {
     pacote: '', idItem: '', centro: '', origem: '',
@@ -365,19 +409,11 @@ export default function App() {
       const text = await response.text();
       try {
         const data = JSON.parse(text);
-        if (Array.isArray(data)) {
-           setItems(data);
-        } else {
-           setFetchError("Erro: A resposta não é uma lista válida.");
-        }
-      } catch(e) {
-        setFetchError("Erro de formatação JSON no Script.");
-      }
-    } catch (err) {
-      setFetchError("Falha de comunicação com a planilha.");
-    } finally {
-      setLoadingList(false);
-    }
+        if (Array.isArray(data)) setItems(data);
+        else setFetchError("Erro: A resposta não é uma lista válida.");
+      } catch(e) { setFetchError("Erro de formatação JSON no Script."); }
+    } catch (err) { setFetchError("Falha de comunicação com a planilha."); } 
+    finally { setLoadingList(false); }
   };
 
   useEffect(() => {
@@ -390,13 +426,9 @@ export default function App() {
 
   useEffect(() => {
     if (items.length === 0) return;
-
-    // Sugere próximo ID Item e mantém ID Pacote baseando-se estritamente na última linha da planilha
     const lastItem = items[items.length - 1]; 
-
     setFormData(prev => {
       let updates = {};
-
       const autoPacote = lastItem["ID Pacote"] || '';
       if (!prev.pacote && autoPacote) updates.pacote = autoPacote;
 
@@ -410,10 +442,7 @@ export default function App() {
           updates.idItem = `${prefix}${String(nextNum).padStart(numStr.length, '0')}`;
         }
       }
-
-      if (Object.keys(updates).length > 0) {
-          return { ...prev, ...updates };
-      }
+      if (Object.keys(updates).length > 0) return { ...prev, ...updates };
       return prev;
     });
   }, [items]);
@@ -452,7 +481,6 @@ export default function App() {
       }
 
       const base64Image = await resizeImageForOCR(file);
-      
       const worker = await window.Tesseract.createWorker('por');
       const ret = await worker.recognize(base64Image);
       const text = ret.data.text;
@@ -472,14 +500,13 @@ export default function App() {
         estudante3: parsedData.estudante3 || prev.estudante3,
         codigo: parsedData.codigo || prev.codigo,
         tipoDocumental: parsedData.tipoDocumental || prev.tipoDocumental,
-        serie: parsedData.serie || prev.serie
+        serie: parsedData.serie || prev.serie,
+        observacoes: parsedData.observacoes || prev.observacoes
       }));
 
       setOcrStatus('success');
       setTimeout(() => setOcrStatus('idle'), 3000);
-      
     } catch (err) {
-      console.error(err);
       setOcrStatus('error');
       setTimeout(() => setOcrStatus('idle'), 4000);
     }
@@ -505,7 +532,6 @@ export default function App() {
       });
       
       setStatus('success');
-      
       setFormData(prev => ({
         ...initialFormState,
         pacote: prev.pacote,
@@ -513,7 +539,6 @@ export default function App() {
         origem: prev.origem,
         idItem: ''
       }));
-      
       fetchItems();
       setTimeout(() => setStatus('idle'), 3000);
     } catch (error) {
@@ -536,22 +561,16 @@ export default function App() {
     return 0;
   });
 
-  // Métricas do Dashboard
   const dashboardStats = useMemo(() => {
-    const stats = {
-      origem: {}, mesAno: {}, ano: {}, decada: {}, codigo: {}
-    };
+    const stats = { origem: {}, mesAno: {}, ano: {}, decada: {}, codigo: {} };
 
     items.forEach(item => {
-      // Origem
       const origem = item["Origem"] || "Não Informado";
       stats.origem[origem] = (stats.origem[origem] || 0) + 1;
 
-      // Datas (Mês/Ano, Ano, Década)
       const dataStr = item["Data do documento"];
       if (dataStr) {
         stats.mesAno[dataStr] = (stats.mesAno[dataStr] || 0) + 1;
-        
         let ano = '';
         if (dataStr.includes('-')) ano = dataStr.split('-')[0];
         else if (dataStr.length >= 4) ano = dataStr.substring(0, 4);
@@ -563,25 +582,54 @@ export default function App() {
         }
       }
 
-      // Código de Classificação
       const codigo = item["Código de Classificação"] || "Sem Código";
       stats.codigo[codigo] = (stats.codigo[codigo] || 0) + 1;
     });
 
-    // Formata para os gráficos (Array de {label, value})
     const formatData = (obj, sortFn) => Object.entries(obj).map(([label, value]) => ({ label, value })).sort(sortFn);
 
     return {
-      origem: formatData(stats.origem, (a, b) => b.value - a.value).slice(0, 15), // Top 15 Origens
-      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)), // Cronológico
-      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)), // Cronológico
-      decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label)), // Cronológico
-      codigo: formatData(stats.codigo, (a, b) => b.value - a.value).slice(0, 10), // Top 10 Códigos
+      origem: formatData(stats.origem, (a, b) => b.value - a.value).slice(0, 15),
+      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)),
+      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)),
+      decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label)),
+      codigo: formatData(stats.codigo, (a, b) => b.value - a.value).slice(0, 10),
     };
   }, [items]);
 
   return (
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-6 px-4 font-sans selection:bg-[#ffb300]">
+      
+      {/* Modal Ficha Resumo do Código de Classificação */}
+      {selectedCodigo && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+           <div className="bg-white border-[8px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] w-full max-w-5xl max-h-[90vh] flex flex-col">
+              <div className="p-4 bg-[#00bcd4] text-black flex justify-between items-center border-b-[6px] border-black">
+                 <div>
+                    <h2 className="font-black uppercase text-xs md:text-sm tracking-widest opacity-80">Ficha Resumo da Classificação</h2>
+                    <h3 className="font-black text-xl md:text-2xl mt-1">{selectedCodigo}</h3>
+                 </div>
+                 <button onClick={() => setSelectedCodigo(null)} className="w-10 h-10 border-[4px] border-black bg-white font-black hover:bg-red-500 hover:text-white transition-colors active:translate-y-1 active:translate-x-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none">X</button>
+              </div>
+              <div className="p-4 overflow-y-auto bg-gray-50 flex-1">
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {items.filter(i => i["Código de Classificação"] === selectedCodigo).map((item, idx) => (
+                       <div key={idx} className="border-[4px] border-black bg-white p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col gap-2 text-sm">
+                          <div className="flex justify-between border-b-[2px] border-black pb-2">
+                             <span className="font-black text-[#c2185b]">{item["ID Item"]}</span>
+                             <span className="font-bold">{item["Data do documento"]}</span>
+                          </div>
+                          <div className="font-bold uppercase tracking-wider">{item["Origem"]}</div>
+                          <div className="font-black text-lg leading-tight">{item["Escopo e Conteúdo"] || item["Disciplina"]}</div>
+                          <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-50">Produtor:</span> {item["Produtor"] || item["Estudante 1"] || '--'}</div>
+                       </div>
+                    ))}
+                 </div>
+              </div>
+           </div>
+        </div>
+      )}
+
       <div className="w-full max-w-6xl bg-white border-[8px] md:border-[12px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
         <div className="flex flex-col md:flex-row border-b-[8px] md:border-b-[12px] border-black">
@@ -620,6 +668,7 @@ export default function App() {
               <option value="022.63 - Promoção e progressão funcional" />
               <option value="028.11 - Cumprimento de missões e viagens a serviço - no país - com ônus" />
               <option value="028.21 - Cumprimento de missões e viagens a serviço - no exterior - com ônus" />
+              <option value="122.3 - Disciplinas: programas didáticos" />
               <option value="125.31 - Provas. Exames. Trabalhos" />
               <option value="125.32 - Trabalho de conclusão de curso" />
               <option value="125.43 - Assentamentos individuais dos alunos (Dossiês)" />
@@ -674,10 +723,10 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Pacote:</strong> <br/>{formData.pacote || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">ID Item:</strong> <br/>{formData.idItem || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
-                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem/Curso:</strong> <br/>{formData.origem || '-'}</div>
+                    <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem:</strong> <br/>{formData.origem || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Escopo e Conteúdo:</strong> <br/>{formData.escopoConteudo || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudantes:</strong> <br/>{[formData.produtor, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Orientador(a):</strong> <br/>{formData.orientador || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudante Principal:</strong> <br/>{formData.produtor || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-gray-500 uppercase">Pontos de Acesso Secundários:</strong> <br/>{[formData.orientador, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Data do Documento:</strong> <br/>{formData.dataDocumento || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Tipo Documental:</strong> <br/>{formData.tipoDocumental || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Série:</strong> <br/>{formData.serie || '-'}</div>
@@ -691,75 +740,82 @@ export default function App() {
             ) : (
               <form onSubmit={handlePreSubmit} className="flex flex-col gap-8">
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#e0f7fa] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">ID Pacote *</label>
-                    <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input required type="text" name="pacote" value={formData.pacote} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-white uppercase" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-[#c2185b]">ID Item *</label>
-                    <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input required type="text" name="idItem" value={formData.idItem} onChange={handleChange} className="w-full border-[4px] border-black p-3 text-lg font-mono focus:outline-none focus:bg-[#f8bbd0] uppercase" />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#ffe082] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide">Centro</label>
-                    <input type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input type="text" name="centro" value={formData.centro} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold uppercase" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide">Origem (Curso/Depto)</label>
-                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide">Origem</label>
+                    <input type="text" list="listaOrigens" name="origem" value={formData.origem} onChange={handleChange} className="w-full border-[4px] border-black p-3 focus:outline-none focus:bg-white font-bold" />
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white">
+                <div className="flex flex-col gap-6 p-6 border-[6px] border-black bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Escopo e Conteúdo (Assunto / Disciplina) *</label>
-                    <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input required type="text" list="listaEscopos" name="escopoConteudo" value={formData.escopoConteudo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-[#e0f7fa]" />
                   </div>
                   
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) / Professor(a)</label>
-                    <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Produtor / Requerente / Estudante Principal *</label>
+                    <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-[#ffe082]" />
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t-[4px] border-black border-dashed">
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm">Produtor / Estudante 1 *</label>
-                      <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                  <details className="w-full border-[4px] border-black bg-white group cursor-pointer mt-4">
+                    <summary className="font-black text-black uppercase tracking-wide text-xs p-4 bg-gray-100 group-open:border-b-[4px] border-black hover:bg-gray-200 transition-colors">
+                      ▶ Pontos de Acesso Secundários (Orientador, Coautores...)
+                    </summary>
+                    <div className="p-6 flex flex-col gap-4 bg-white cursor-default">
+                      <div className="flex flex-col gap-2">
+                        <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Orientador(a) / Professor(a)</label>
+                        <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-pink-50" />
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="flex flex-col gap-2">
+                          <label className="font-black text-black uppercase tracking-wide text-xs text-gray-500">Estudante 2</label>
+                          <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-50" />
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <label className="font-black text-black uppercase tracking-wide text-xs text-gray-500">Estudante 3</label>
+                          <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-50" />
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 2</label>
-                      <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      <label className="font-black text-black uppercase tracking-wide text-sm text-gray-500">Estudante 3</label>
-                      <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-gray-100 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
-                    </div>
-                  </div>
+                  </details>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-[#f8bbd0] p-6 border-[6px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Tipo Documental</label>
-                    <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input type="text" list="listaTipos" name="tipoDocumental" value={formData.tipoDocumental} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-xs">Série Documental</label>
-                    <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <input type="text" list="listaSeries" name="serie" value={formData.serie} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" />
                   </div>
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-xs">Data do Documento (Mês/Ano ou Ano) *</label>
-                    <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-black focus:outline-none focus:bg-white uppercase shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Ex: 2008-11" />
+                    <label className="font-black text-black uppercase tracking-wide text-xs">Data do Documento (Ano-Mês) *</label>
+                    <input required type="text" name="dataDocumento" value={formData.dataDocumento} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-black focus:outline-none focus:bg-white uppercase" placeholder="Ex: 2008-11" />
                   </div>
                   <div className="flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Código de Classificação IFES/SIGA</label>
-                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" placeholder="Selecione ou digite..." />
+                    <input type="text" list="codigosSiga" name="codigo" value={formData.codigo} onChange={handleChange} className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white" placeholder="Selecione ou digite..." />
                   </div>
                   <div className="col-span-1 md:col-span-2 flex flex-col gap-2">
                     <label className="font-black text-black uppercase tracking-wide text-gray-700 text-xs">Observações</label>
-                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]" />
+                    <textarea name="observacoes" value={formData.observacoes} onChange={handleChange} rows="2" className="w-full border-[4px] border-black p-3 font-bold focus:outline-none focus:bg-white resize-none" />
                   </div>
                 </div>
 
@@ -772,8 +828,18 @@ export default function App() {
         )}
 
         {/* Aba do Acervo para Listagem */}
+        {}
         {activeTab === 'acervo' && (
           <div className="p-6 md:p-8 flex flex-col bg-white min-h-[500px]">
+            <div className="flex justify-between items-center mb-6">
+               <h2 className="text-xl font-black uppercase tracking-widest text-[#c2185b]">Inventário do Acervo</h2>
+               <div className="flex border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] bg-white">
+                 <button onClick={() => setViewMode('list')} className={`px-4 py-2 font-black uppercase text-xs transition-colors ${viewMode === 'list' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Lista</button>
+                 <div className="w-[4px] bg-black"></div>
+                 <button onClick={() => setViewMode('card')} className={`px-4 py-2 font-black uppercase text-xs transition-colors ${viewMode === 'card' ? 'bg-[#ffb300] text-black' : 'text-gray-500 hover:bg-gray-100'}`}>Cards</button>
+               </div>
+            </div>
+
             {fetchError && (
               <div className="mb-6 bg-red-200 border-[4px] border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
                 <p className="font-black text-red-900 uppercase">⚠ Erro:</p><p className="font-bold text-sm mt-1">{fetchError}</p>
@@ -781,46 +847,76 @@ export default function App() {
             )}
             
             {loadingList ? (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="font-black text-2xl uppercase animate-pulse">Consultando Planilha...</p>
+              <div className="flex-1 flex items-center justify-center min-h-[300px]">
+                <p className="font-black text-2xl uppercase animate-pulse text-[#00bcd4]">Consultando Banco de Dados...</p>
               </div>
-            ) : (
-              <div className="overflow-hidden border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+            ) : sortedItems.length === 0 ? (
+              <div className="flex-1 flex items-center justify-center p-10 bg-gray-50 border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
+                <p className="font-black text-xl uppercase text-gray-400">O Acervo está Vazio.</p>
+              </div>
+            ) : viewMode === 'list' ? (
+              <div className="border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] overflow-hidden">
                 <div className="max-h-[60vh] overflow-y-auto">
-                  <table className="w-full text-left border-collapse whitespace-nowrap">
+                  <table className="w-full text-left border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr className="bg-[#00bcd4] text-black shadow-sm">
-                        {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data do documento", "Tipo Documental", "Série", "Código Class."].map((header) => (
-                          <th key={header} onClick={() => handleSort(header === "Código Class." ? "Código de Classificação" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0">
-                            {header} {sortConfig.key === (header === "Código Class." ? "Código de Classificação" : header) && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                        {["Data de análise", "ID Item", "Centro", "Origem", "Produtor", "Escopo e Conteúdo", "Data doc", "Código Class."].map((header) => (
+                          <th key={header} onClick={() => handleSort(header === "Data doc" ? "Data do documento" : header === "Código Class." ? "Código de Classificação" : header)} className="border-b-[6px] border-r-[4px] border-black p-4 font-black uppercase text-[10px] md:text-xs cursor-pointer hover:bg-cyan-300 last:border-r-0 whitespace-nowrap">
+                            {header} {sortConfig.key === (header === "Data doc" ? "Data do documento" : header === "Código Class." ? "Código de Classificação" : header) && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                           </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="bg-gray-50">
-                      {sortedItems.length === 0 ? (
-                        <tr><td colSpan="10" className="p-8 text-center font-bold text-gray-500 uppercase">O Acervo está Vazio.</td></tr>
-                      ) : (
-                        sortedItems.map((item, idx) => (
+                        {sortedItems.map((item, idx) => (
                           <tr key={idx} className="hover:bg-yellow-100 border-b-[4px] border-black last:border-b-0 text-sm">
-                            <td className="p-4 font-mono text-[10px] border-r-[4px] border-black">{item["Data de análise"]?.split(',')[0]}</td>
-                            <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black">{item["ID Item"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Centro"]?.substring(0,10)}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Origem"]?.substring(0,20)}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Produtor"]?.substring(0,20)}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black" title={item["Escopo e Conteúdo"]}>{item["Escopo e Conteúdo"]?.substring(0,25)}{item["Escopo e Conteúdo"]?.length > 25 ? '...' : ''}</td>
-                            <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082]">
+                            <td className="p-4 font-mono text-[10px] border-r-[4px] border-black whitespace-nowrap">{formatDateTime(item["Data de análise"])}</td>
+                            <td className="p-4 font-black text-[#c2185b] border-r-[4px] border-black whitespace-nowrap">{item["ID Item"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[80px]">{item["Centro"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[120px]">{item["Origem"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black truncate max-w-[150px]">{item["Produtor"] || item["Estudante 1"]}</td>
+                            <td className="p-4 font-bold border-r-[4px] border-black min-w-[200px]" title={item["Escopo e Conteúdo"] || item["Disciplina"]}>{(item["Escopo e Conteúdo"] || item["Disciplina"])?.substring(0,60)}{((item["Escopo e Conteúdo"] || item["Disciplina"])?.length > 60 ? '...' : '')}</td>
+                            <td className="p-4 font-black border-r-[4px] border-black bg-[#ffe082] whitespace-nowrap">
                                 {item["Data do documento"] && item["Data do documento"].includes('-') ? item["Data do documento"].split('-').reverse().join('/') : item["Data do documento"]}
                             </td>
-                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Tipo Documental"]}</td>
-                            <td className="p-4 font-bold border-r-[4px] border-black">{item["Série"]?.substring(0,20)}</td>
-                            <td className="p-4 font-mono text-[10px]">{item["Código de Classificação"]?.split('-')[0]}</td>
+                            <td className="p-4">
+                                {item["Código de Classificação"] ? (
+                                    <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[150px] block" title={item["Código de Classificação"]}>
+                                        {item["Código de Classificação"]}
+                                    </button>
+                                ) : '--'}
+                            </td>
                           </tr>
-                        ))
-                      )}
+                        ))}
                     </tbody>
                   </table>
                 </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in fade-in duration-300">
+                 {sortedItems.map((item, idx) => (
+                    <div key={idx} className="border-[6px] border-black shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] bg-white flex flex-col h-full hover:-translate-y-1 hover:-translate-x-1 transition-transform">
+                       <div className="p-3 bg-[#c2185b] border-b-[4px] border-black flex justify-between items-center text-white">
+                           <span className="font-black text-lg tracking-wider">{item["ID Item"]}</span>
+                           <span className="font-mono text-[9px] bg-black px-2 py-1">{item["Data do documento"]}</span>
+                       </div>
+                       <div className="p-4 flex-1 flex flex-col gap-2">
+                           <div className="flex gap-2 font-bold text-xs uppercase tracking-widest text-gray-500 mb-2">
+                              <span className="bg-[#ffe082] text-black px-2 py-0.5 border-[2px] border-black">{item["Centro"]}</span>
+                              <span className="truncate">{item["Origem"]}</span>
+                           </div>
+                           <h3 className="font-black text-base leading-tight">{item["Escopo e Conteúdo"] || item["Disciplina"]}</h3>
+                           <div className="text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-xs uppercase">Produtor:</span> {item["Produtor"] || item["Estudante 1"] || '--'}</div>
+                       </div>
+                       <div className="p-3 bg-gray-100 border-t-[4px] border-black flex flex-col gap-1 text-[10px] font-black uppercase">
+                           {item["Código de Classificação"] ? (
+                               <button onClick={() => setSelectedCodigo(item["Código de Classificação"])} className="bg-white border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Ver Resumo">
+                                  🏷️ {item["Código de Classificação"]}
+                               </button>
+                           ) : <span className="opacity-50">Sem Código</span>}
+                       </div>
+                    </div>
+                 ))}
               </div>
             )}
           </div>
@@ -828,42 +924,42 @@ export default function App() {
 
         {/* Aba de Dashboard */}
         {activeTab === 'dashboard' && (
-          <div className="p-6 md:p-8 flex flex-col bg-[#e0f7fa] min-h-[500px]">
+          <div className="p-4 md:p-8 flex flex-col bg-[#e0f7fa] min-h-[500px]">
             {loadingList ? (
                <div className="flex-1 flex items-center justify-center">
-                 <p className="font-black text-2xl uppercase animate-pulse">Calculando Estatísticas...</p>
+                 <p className="font-black text-2xl uppercase animate-pulse text-[#00bcd4]">Processando Estatísticas...</p>
                </div>
             ) : items.length === 0 ? (
                <div className="flex-1 flex items-center justify-center p-10 bg-white border-[6px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)]">
                  <p className="font-black text-xl uppercase text-gray-400">Acervo vazio. Registre itens para ver os gráficos.</p>
                </div>
             ) : (
-               <div className="flex flex-col gap-6">
+               <div className="flex flex-col gap-6 animate-in fade-in duration-500">
                  
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                   <div className="h-[400px]">
+                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                   <div className="min-h-[400px]">
                      <PieChart data={dashboardStats.origem} title="Acervo por Origem" />
                    </div>
-                   <div className="h-[400px]">
+                   <div className="min-h-[400px]">
                      <PieChart data={dashboardStats.decada} title="Acervo por Décadas" />
                    </div>
                  </div>
 
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                   <div className="h-[350px]">
+                 <div className="grid grid-cols-1 gap-6">
+                   <div className="min-h-[350px]">
                      <BarChart data={dashboardStats.mesAno} title="Acervo Mês a Mês" color="#c2185b" />
                    </div>
-                   <div className="h-[350px]">
+                   <div className="min-h-[350px]">
                      <BarChart data={dashboardStats.ano} title="Acervo Ano a Ano" color="#ffb300" />
                    </div>
                  </div>
 
-                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                   <div className="h-[450px] col-span-1 md:col-span-1">
-                     <PieChart data={dashboardStats.codigo} title="Códigos de Classificação (Pizza)" />
+                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                   <div className="min-h-[400px] lg:col-span-1">
+                     <PieChart data={dashboardStats.codigo} title="Códigos Analisados" />
                    </div>
-                   <div className="h-[450px] col-span-1 md:col-span-2">
-                     <BarChart data={dashboardStats.codigo} title="Quantidade por Código de Classificação" color="#00bcd4" />
+                   <div className="min-h-[400px] lg:col-span-2">
+                     <BarChart data={dashboardStats.codigo} title="Volume por Código de Classificação" color="#00bcd4" />
                    </div>
                  </div>
 
