@@ -14,16 +14,17 @@ const getGoogleScriptUrl = () => {
 const GOOGLE_SCRIPT_URL = getGoogleScriptUrl();
 
 // ==========================================
-// FUNÇÕES UTILITÁRIAS
+// FUNÇÕES UTILITÁRIAS DE FORMATAÇÃO E OCR
 // ==========================================
 const cleanDateTimeStr = (str) => {
   if (!str) return '--';
   const s = str.toString();
-  // Se for uma data gigantesca do Google Sheets com GMT ou dias da semana em inglês
-  if (s.length > 20 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
+  if (s.length > 10 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
     try {
       const d = new Date(s);
-      if (!isNaN(d.getTime())) return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      }
     } catch(e) {}
   }
   return s;
@@ -32,22 +33,20 @@ const cleanDateTimeStr = (str) => {
 const cleanDateStr = (str) => {
   if (!str) return '--';
   const s = str.toString();
-  // Se for a data injetada pelo Google Sheets, expurga a hora e o fuso
-  if (s.length > 20 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
+  if (s.length > 10 && (s.includes('GMT') || s.includes('Horário') || s.includes('Brasília') || s.match(/Mon|Tue|Wed|Thu|Fri|Sat|Sun/))) {
     try {
       const d = new Date(s);
-      // Força UTC para evitar que o fuso horário atrase o dia em 1
-      if (!isNaN(d.getTime())) return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' }); 
+      if (!isNaN(d.getTime())) {
+        return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' }); 
+      }
     } catch(e) {}
   }
-  // Se for ISO
   if (s.includes('T') && s.includes('Z')) {
       try {
           const d = new Date(s);
           return d.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
       } catch(e) {}
   }
-  // Se for apenas texto livre (1990 ~ 2000), devolve do jeito que está
   return s;
 };
 
@@ -79,9 +78,6 @@ const toTitleCase = (str) => {
             .replace(/\b(Ii|Iii|Iv|Vi|Vii|Viii|Ix|Xi)\b/g, (a) => a.toUpperCase());
 };
 
-// ==========================================
-// LÓGICA ARQUIVÍSTICA (OCR CÂMERA)
-// ==========================================
 const parseExtractedText = (rawText) => {
   let parsed = { 
     centro: '', origem: '', escopoConteudo: '', pontoAcesso3: '', produtor: '', pontoAcesso1: '', pontoAcesso2: '', 
@@ -92,13 +88,11 @@ const parseExtractedText = (rawText) => {
   const fullText = rawLines.join(' ');
   const upperFullText = fullText.toUpperCase();
 
-  // EXTRAÇÃO DO NÚMERO DO PROCESSO
   const processoMatch = fullText.match(/(23080\.\d{6}\/\d{4}-\d{2})/);
   if (processoMatch) {
       parsed.observacoes = `Processo ${processoMatch[1]}`;
   }
 
-  // 1. Centro e Origem 
   if (/\bMEN\b/i.test(fullText) || upperFullText.includes('METODOLOGIA DE ENSINO')) {
       parsed.origem = 'MEN';
       parsed.centro = 'CED';
@@ -130,7 +124,6 @@ const parseExtractedText = (rawText) => {
       else if (upperFullText.includes('CFH')) parsed.centro = 'CFH';
   }
 
-  // 2. Origem / Curso
   if (!parsed.origem) {
       let origemLine = rawLines.find(l => /^ORIGEM[:\s]*|^CURSO\b/i.test(l));
       let deptoLine = rawLines.find(l => /^DEPARTAMENTO\b/i.test(l));
@@ -147,7 +140,6 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 3. Produtor / Requerente / Estudante
   let reqLineIndex = rawLines.findIndex(l => /^(?:Requerente|Interessado)[:\s]*/i.test(l));
   if (reqLineIndex !== -1) {
       let prodText = rawLines[reqLineIndex].replace(/^(?:Requerente|Interessado)[:\s]*/i, '').trim();
@@ -182,14 +174,12 @@ const parseExtractedText = (rawText) => {
       if (students[2]) parsed.pontoAcesso2 = students[2];
   }
 
-  // 4. Orientador(a) / Professora
   let profLine = rawLines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
   if (profLine) {
       let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '').replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, '');
       parsed.pontoAcesso3 = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
-  // 5. Escopo e Conteúdo (Assunto / Disciplina)
   let assuntoTexto = '';
   let origemDesalinhada = rawLines.find(l => /^Origem[:\s]*/i.test(l) && /PROGRESS[AÃ]O/i.test(l));
 
@@ -238,7 +228,6 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 6. Data do Documento (Recuperada como Texto/Intervalo)
   let intervalMatch = fullText.match(/\b(19\d{2}|20\d{2})\s*(?:-|a|~|à)\s*(19\d{2}|20\d{2})\b/i);
   if (intervalMatch) {
       parsed.dataDocumento = `${intervalMatch[1]} a ${intervalMatch[2]}`;
@@ -263,7 +252,6 @@ const parseExtractedText = (rawText) => {
       }
   }
 
-  // 7. Inteligência Arquivística
   if (upperFullText.includes('PROGRESSÃO') || upperFullText.includes('PROGRESSAO') || upperFullText.includes('PROMOÇÃO') || upperFullText.includes('PROMOCAO')) {
       parsed.tipoDocumental = upperFullText.includes('MEMORIAL') ? 'Memorial Descritivo' : 'Processo Administrativo';
       parsed.serie = 'Avaliação de Desempenho - Progressão Funcional';
@@ -302,10 +290,7 @@ const parseExtractedText = (rawText) => {
   return parsed;
 };
 
-// ==========================================
-// COMPONENTES GRÁFICOS (DASHBOARD)
-// ==========================================
-const PieChart = ({ data, title }) => {
+const PieChart = ({ data, title, onFilter }) => {
   const total = data.reduce((acc, item) => acc + item.value, 0);
   if (total === 0) return <div className="p-4 text-center text-sm font-bold text-gray-400 border-[4px] border-black min-h-[250px] bg-white flex items-center justify-center">Sem dados</div>;
 
@@ -322,8 +307,7 @@ const PieChart = ({ data, title }) => {
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       <div className="flex flex-col items-center gap-6 justify-center flex-1">
         
-        {/* Gráfico SVG Puro (100% Compatível) */}
-        <div className="relative w-32 h-32 md:w-40 md:h-40 flex-shrink-0">
+        <div className="relative w-36 h-36 md:w-44 md:h-44 flex-shrink-0">
           <svg viewBox="0 0 32 32" className="w-full h-full transform -rotate-90 rounded-full border-[4px] border-black bg-white">
             {slices.map((slice, idx) => {
               const dasharray = `${slice.percentage} ${100 - slice.percentage}`;
@@ -347,12 +331,16 @@ const PieChart = ({ data, title }) => {
           </div>
         </div>
 
-        <div className="w-full flex flex-col gap-3 max-h-[200px] overflow-y-auto pr-2 mt-4">
+        <div className="w-full flex flex-col gap-3 max-h-[220px] overflow-y-auto pr-2 mt-4">
           {slices.map((item, idx) => (
-            <div key={idx} className="flex justify-between items-start text-[10px] md:text-xs font-bold uppercase tracking-wider gap-2">
+            <div 
+              key={idx} 
+              onClick={() => onFilter && onFilter(item.filterKey, item.label)}
+              className="flex justify-between items-start text-[10px] md:text-xs font-bold uppercase tracking-wider gap-2 cursor-pointer hover:bg-yellow-100 p-1 rounded transition-colors"
+            >
               <div className="flex items-start gap-2">
                 <div className="w-3 h-3 md:w-4 md:h-4 mt-0.5 border-[2px] border-black flex-shrink-0" style={{ backgroundColor: item.color }}></div>
-                <span className="leading-tight text-left break-words line-clamp-2">{item.label}</span>
+                <span className="leading-tight text-left break-words line-clamp-2 underline decoration-dotted">{item.label}</span>
               </div>
               <span className="flex-shrink-0 font-black">{item.value} <span className="opacity-50 font-normal">({item.percentage.toFixed(1)}%)</span></span>
             </div>
@@ -363,22 +351,26 @@ const PieChart = ({ data, title }) => {
   );
 };
 
-const BarChart = ({ data, title, color = "#00bcd4" }) => {
+const BarChart = ({ data, title, color = "#00bcd4", onFilter }) => {
   const maxVal = Math.max(...data.map(d => d.value), 1);
 
   return (
-    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full h-[350px] md:h-[400px]">
+    <div className="flex flex-col bg-white p-4 md:p-6 border-[4px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] w-full min-h-[385px] md:min-h-[420px]">
       <h3 className="font-black text-sm uppercase tracking-widest mb-6 border-b-[2px] border-black pb-2">{title}</h3>
       {data.length === 0 ? (
          <div className="flex-1 flex items-center justify-center text-sm font-bold text-gray-400">Sem dados</div>
       ) : (
-        <div className="flex-1 flex items-end justify-start w-full gap-4 border-b-[4px] border-l-[4px] border-black pb-28 pt-8 pl-2 overflow-x-auto overflow-y-visible relative h-full">
+        <div className="flex-1 flex items-end justify-start w-full gap-4 border-b-[4px] border-l-[4px] border-black pb-32 pt-10 pl-3 overflow-x-auto overflow-y-visible relative min-h-[300px]">
           {data.map((item, idx) => (
-            <div key={idx} className="flex flex-col items-center justify-end flex-shrink-0 min-w-[30px] md:min-w-[40px] h-full group relative">
-              <span className="absolute -top-6 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-10 rounded">{item.value}</span>
-              <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity relative" style={{ height: `${Math.max((item.value / maxVal) * 100, 2)}%`, backgroundColor: color }}></div>
-              <div className="absolute -bottom-2 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left flex items-start w-[100px]">
-                  <span className="text-[9px] md:text-[10px] font-black uppercase truncate w-full text-right" title={item.label}>
+            <div 
+              key={idx} 
+              onClick={() => onFilter && onFilter(item.filterKey, item.label)}
+              className="flex flex-col items-center justify-end flex-shrink-0 min-w-[36px] md:min-w-[48px] h-full group relative cursor-pointer"
+            >
+              <span className="absolute -top-7 text-[10px] font-black opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-1.5 py-0.5 z-20 rounded shadow">{item.value}</span>
+              <div className="w-full border-[2px] border-black hover:opacity-80 transition-opacity relative" style={{ height: `${Math.max((item.value / maxVal) * 100, 4)}%`, backgroundColor: color }}></div>
+              <div className="absolute -bottom-3 left-1/2 transform -translate-x-1/2 translate-y-full -rotate-45 origin-top-left flex items-start w-[110px]">
+                  <span className="text-[9px] md:text-[10px] font-black uppercase truncate w-full text-right underline decoration-dotted" title={item.label}>
                      {item.label}
                   </span>
               </div>
@@ -390,9 +382,6 @@ const BarChart = ({ data, title, color = "#00bcd4" }) => {
   );
 };
 
-// ==========================================
-// COMPONENTE PRINCIPAL (REACT APP)
-// ==========================================
 export default function App() {
   const [activeTab, setActiveTab] = useState('registro'); 
   const [items, setItems] = useState([]);
@@ -401,7 +390,6 @@ export default function App() {
   const [fetchError, setFetchError] = useState('');
   const [viewMode, setViewMode] = useState('list'); 
   
-  // Estado Universal para Filtros e Modais
   const [modalFilter, setModalFilter] = useState(null); 
 
   const initialFormState = {
@@ -466,8 +454,6 @@ export default function App() {
 
   const uniqueOrigens = [...new Set(items.map(i => i["Origem"]).filter(Boolean))];
   const uniqueEscopos = [...new Set(items.map(i => i["Escopo e Conteúdo"]).filter(Boolean))];
-  
-  // Agrupa todos os pontos de acesso (incluindo nomes de colunas antigas para não perder o autocomplete do histórico)
   const uniquePontosAcesso = [...new Set([
       ...items.map(i => i["Ponto de Acesso 1"]),
       ...items.map(i => i["Ponto de Acesso 2"]),
@@ -476,7 +462,6 @@ export default function App() {
       ...items.map(i => i["Estudante 2"]),
       ...items.map(i => i["Estudante 3"])
   ].filter(Boolean))];
-  
   const uniqueProdutores = [...new Set(items.map(i => i["Produtor"]).filter(Boolean))];
   const uniqueSeries = [...new Set(items.map(i => i["Série"]).filter(Boolean))];
   const uniqueTipos = [...new Set(items.map(i => i["Tipo Documental"]).filter(Boolean))];
@@ -591,7 +576,6 @@ export default function App() {
       const origem = item["Origem"] || "Não Informado";
       stats.origem[origem] = (stats.origem[origem] || 0) + 1;
 
-      // Passa a data do documento pelo limpador antes de agrupar!
       const dataStr = cleanDateStr(item["Data do documento"]);
       if (dataStr && dataStr !== '--') {
         const yearMatch = dataStr.match(/\b(19\d{2}|20\d{2})\b/);
@@ -606,18 +590,18 @@ export default function App() {
         stats.mesAno[mesAnoLabel] = (stats.mesAno[mesAnoLabel] || 0) + 1;
       }
 
-      const codigo = item["Código de Classificação"] || "Sem Código";
+      const codigo = item["Código de Classification"] || item["Código de Classificação"] || "Sem Código";
       stats.codigo[codigo] = (stats.codigo[codigo] || 0) + 1;
     });
 
-    const formatData = (obj, sortFn) => Object.entries(obj).map(([label, value]) => ({ label, value })).sort(sortFn);
+    const formatData = (obj, sortFn, filterKey) => Object.entries(obj).map(([label, value]) => ({ label, value, filterKey })).sort(sortFn);
 
     return {
-      origem: formatData(stats.origem, (a, b) => b.value - a.value).slice(0, 15),
-      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label)).slice(-15), // Pega os 15 mais recentes
-      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label)).slice(-15),
-      decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label)),
-      codigo: formatData(stats.codigo, (a, b) => b.value - a.value).slice(0, 10),
+      origem: formatData(stats.origem, (a, b) => b.value - a.value, 'Origem').slice(0, 15),
+      mesAno: formatData(stats.mesAno, (a, b) => a.label.localeCompare(b.label), 'Data do documento').slice(-15),
+      ano: formatData(stats.ano, (a, b) => a.label.localeCompare(b.label), 'Data do documento').slice(-15),
+      decada: formatData(stats.decada, (a, b) => a.label.localeCompare(b.label), 'Data do documento'),
+      codigo: formatData(stats.codigo, (a, b) => b.value - a.value, 'Código de Classificação').slice(0, 10),
     };
   }, [items]);
 
@@ -625,7 +609,6 @@ export default function App() {
     <div className="min-h-screen bg-[#f4f4f0] flex flex-col items-center py-4 md:py-6 px-2 md:px-4 font-sans selection:bg-[#ffb300]">
       
       {/* Modal Ficha Resumo Universal */}
-      {}
       {modalFilter && (
         <div className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
            <div className="bg-white border-[8px] border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] w-full max-w-5xl max-h-[90vh] flex flex-col">
@@ -638,23 +621,27 @@ export default function App() {
               </div>
               <div className="p-4 overflow-y-auto bg-gray-50 flex-1">
                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {items.filter(i => i[modalFilter.key] === modalFilter.value).map((item, idx) => (
+                    {items.filter(i => (i[modalFilter.key] || i["Código de Classification"]) === modalFilter.value).map((item, idx) => (
                        <div key={idx} className="border-[4px] border-black bg-white p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] flex flex-col gap-2 text-sm">
                           <div className="flex justify-between border-b-[2px] border-black pb-2">
                              <span className="font-black text-[#c2185b]">{item["ID Item"]}</span>
                              <span className="font-bold">{cleanDateStr(item["Data do documento"])}</span>
                           </div>
-                          <div className="font-bold uppercase tracking-wider">{item["Centro"]} - {item["Origem"]}</div>
+                          <div className="font-bold uppercase tracking-wider">
+                             <span onClick={() => setModalFilter({key: 'Centro', value: item["Centro"], label: 'Centro'})} className="cursor-pointer hover:underline">{item["Centro"]}</span> - <span onClick={() => setModalFilter({key: 'Origem', value: item["Origem"], label: 'Origem'})} className="cursor-pointer hover:underline">{item["Origem"]}</span>
+                          </div>
                           <div className="font-black text-lg leading-tight">{item["Escopo e Conteúdo"]}</div>
                           <div className="mt-2 text-xs uppercase tracking-widest border-t-[2px] border-dotted border-gray-300 pt-2 flex flex-col gap-1">
-                              <div><span className="opacity-50">Produtor:</span> {item["Produtor"] || '--'}</div>
+                              <div><span className="opacity-50">Produtor:</span> <span onClick={() => setModalFilter({key: 'Produtor', value: item["Produtor"], label: 'Produtor'})} className="cursor-pointer hover:underline font-bold text-black">{item["Produtor"] || '--'}</span></div>
                               {(item["Tipo Documental"] || item["Série"]) && (
-                                 <div className="text-[10px] text-gray-500 font-bold">{item["Tipo Documental"]} • {item["Série"]}</div>
+                                 <div className="text-[10px] text-gray-500 font-bold">
+                                    <span onClick={() => setModalFilter({key: 'Tipo Documental', value: item["Tipo Documental"], label: 'Tipo Documental'})} className="cursor-pointer hover:underline">{item["Tipo Documental"]}</span> • <span onClick={() => setModalFilter({key: 'Série', value: item["Série"], label: 'Série'})} className="cursor-pointer hover:underline">{item["Série"]}</span>
+                                 </div>
                               )}
                           </div>
-                          {item["Código de Classificação"] && (
-                              <div className="mt-2 text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 w-fit">
-                                  🏷️ {item["Código de Classificação"]}
+                          {(item["Código de Classificação"] || item["Código de Classification"]) && (
+                              <div className="mt-2 text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 w-fit cursor-pointer hover:bg-cyan-200" onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"] || item["Código de Classification"], label: 'Código de Classificação'})}>
+                                  🏷️ {item["Código de Classificação"] || item["Código de Classification"]}
                               </div>
                           )}
                        </div>
@@ -667,10 +654,14 @@ export default function App() {
 
       <div className="w-full max-w-6xl bg-white border-[6px] md:border-[12px] border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] md:shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] flex flex-col">
         
+        {/* HEADER */}
         <div className="flex flex-col md:flex-row border-b-[6px] md:border-b-[12px] border-black">
-          <div className="bg-[#c2185b] flex-1 p-4 md:p-6 text-white border-b-[6px] md:border-b-0 md:border-r-[12px] border-black">
-            <h1 className="text-2xl md:text-5xl font-black uppercase tracking-tighter">Acervo MEN</h1>
-            <p className="mt-1 text-pink-200 font-bold text-sm md:text-lg">Triagem Arquivística Acadêmica</p>
+          <div className="bg-[#c2185b] flex-1 p-4 md:p-6 text-white border-b-[6px] md:border-b-0 md:border-r-[12px] border-black flex items-center gap-4">
+            <img src="https://raw.githubusercontent.com/killuixo/memorabilia-academia/refs/heads/main/icon.png" alt="Ícone" className="w-12 h-12 md:w-16 md:h-16 border-[3px] border-black bg-white object-contain shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]" />
+            <div>
+              <h1 className="text-2xl md:text-5xl font-black uppercase tracking-tighter">MEMORABILIA - ACADEMIA</h1>
+              <p className="mt-1 text-pink-200 font-bold text-xs md:text-sm">Triagem Arquivística Acadêmica</p>
+            </div>
           </div>
           <div className="flex flex-row md:flex-col bg-[#ffb300] min-w-[250px]">
             <button 
@@ -694,7 +685,7 @@ export default function App() {
           </div>
         </div>
 
-        {}
+        {/* REGISTRAR */}
         {activeTab === 'registro' && (
           <div className="flex flex-col bg-white p-4 md:p-6 relative">
             
@@ -761,8 +752,8 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Centro:</strong> <br/>{formData.centro || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem:</strong> <br/>{formData.origem || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Escopo e Conteúdo:</strong> <br/>{formData.escopoConteudo || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudante Principal:</strong> <br/>{formData.produtor || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-gray-500 uppercase">Pontos de Acesso Secundários:</strong> <br/>{[formData.pontoAcesso1, formData.pontoAcesso2, formData.pontoAcesso3].filter(Boolean).join(' | ') || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor (Requerente):</strong> <br/>{formData.produtor || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-gray-500 uppercase">Pontos de Acesso:</strong> <br/>{[formData.pontoAcesso1, formData.pontoAcesso2, formData.pontoAcesso3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Data do Documento:</strong> <br/>{formData.dataDocumento || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Tipo Documental:</strong> <br/>{formData.tipoDocumental || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Série:</strong> <br/>{formData.serie || '-'}</div>
@@ -805,13 +796,13 @@ export default function App() {
                   </div>
                   
                   <div className="flex flex-col gap-2">
-                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Produtor / Requerente / Estudante Principal *</label>
+                    <label className="font-black text-black uppercase tracking-wide text-[#c2185b] text-xs">Produtor (Requerente / Sujeito) *</label>
                     <input required type="text" list="listaProdutores" name="produtor" value={formData.produtor} onChange={handleChange} className="w-full border-[3px] border-black p-3 text-sm font-bold focus:outline-none focus:bg-[#ffe082]" />
                   </div>
 
                   <details className="w-full border-[3px] border-black bg-white group cursor-pointer mt-2">
                     <summary className="font-black text-black uppercase tracking-wide text-[10px] md:text-xs p-3 md:p-4 bg-gray-100 group-open:border-b-[3px] border-black hover:bg-gray-200 transition-colors">
-                      ▶ Pontos de Acesso Adicionais (Coautores, Orientadores...)
+                      ▶ Pontos de Acesso (Estudantes, Orientadores...)
                     </summary>
                     <div className="p-4 md:p-6 flex flex-col gap-4 bg-white cursor-default">
                       <div className="flex flex-col gap-2">
@@ -863,7 +854,7 @@ export default function App() {
           </div>
         )}
 
-        {}
+        {/* VER ACERVO */}
         {activeTab === 'acervo' && (
           <div className="p-4 md:p-8 flex flex-col bg-white min-h-[500px]">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
@@ -921,9 +912,9 @@ export default function App() {
                                 {cleanDateStr(item["Data do documento"])}
                             </td>
                             <td className="p-2 md:p-3">
-                                {item["Código de Classificação"] ? (
-                                    <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"], label: 'Código de Classificação'})} className="text-[9px] md:text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[120px] md:max-w-[150px] block" title={item["Código de Classificação"]}>
-                                        {item["Código de Classificação"]}
+                                {(item["Código de Classificação"] || item["Código de Classification"]) ? (
+                                    <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"] || item["Código de Classification"], label: 'Código de Classificação'})} className="text-[9px] md:text-[10px] font-black uppercase bg-[#e0f7fa] border-[2px] border-black px-2 py-1 text-cyan-800 hover:bg-cyan-200 transition-colors truncate max-w-[120px] md:max-w-[150px] block" title={item["Código de Classificação"] || item["Código de Classification"]}>
+                                        🏷️ {item["Código de Classificação"] || item["Código de Classification"]}
                                     </button>
                                 ) : '--'}
                             </td>
@@ -949,7 +940,6 @@ export default function App() {
                            <h3 className="font-black text-sm md:text-base leading-tight">{item["Escopo e Conteúdo"]}</h3>
                            <div className="text-xs md:text-sm font-bold text-gray-700 mt-2 border-t-[2px] border-dotted border-gray-300 pt-2"><span className="opacity-60 text-[10px] uppercase">Produtor:</span> <span onClick={() => setModalFilter({key: 'Produtor', value: item["Produtor"], label: 'Produtor'})} className="cursor-pointer hover:text-black hover:underline">{item["Produtor"] || '--'}</span></div>
                            
-                           {/* Adiciona link pros tipos documentais nas notas de rodapé */}
                            {(item["Tipo Documental"] || item["Série"]) && (
                               <div className="flex flex-wrap gap-1 mt-1">
                                  {item["Tipo Documental"] && <span onClick={() => setModalFilter({key: 'Tipo Documental', value: item["Tipo Documental"], label: 'Tipo Documental'})} className="text-[9px] font-bold bg-gray-200 px-1 border border-black cursor-pointer hover:bg-gray-300">{item["Tipo Documental"]}</span>}
@@ -958,9 +948,9 @@ export default function App() {
                            )}
                        </div>
                        <div className="p-3 bg-gray-100 border-t-[4px] border-black flex flex-col gap-1 text-[9px] md:text-[10px] font-black uppercase">
-                           {item["Código de Classificação"] ? (
-                               <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"], label: 'Código de Classificação'})} className="bg-white border-[2px] border-black px-2 py-1.5 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Filtrar por Código">
-                                  🏷️ {item["Código de Classificação"]}
+                           {(item["Código de Classificação"] || item["Código de Classification"]) ? (
+                               <button onClick={() => setModalFilter({key: 'Código de Classificação', value: item["Código de Classificação"] || item["Código de Classification"], label: 'Código de Classificação'})} className="bg-white border-[2px] border-black px-2 py-1.5 text-cyan-800 hover:bg-cyan-100 transition-colors text-left truncate" title="Filtrar por Código">
+                                  🏷️ {item["Código de Classificação"] || item["Código de Classification"]}
                                </button>
                            ) : <span className="opacity-50">Sem Código</span>}
                        </div>
@@ -971,7 +961,7 @@ export default function App() {
           </div>
         )}
 
-        {}
+        {/* DASHBOARD */}
         {activeTab === 'dashboard' && (
           <div className="p-4 md:p-8 flex flex-col bg-[#e0f7fa] min-h-[500px]">
             {loadingList ? (
@@ -987,28 +977,28 @@ export default function App() {
                  
                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                    <div className="w-full">
-                     <PieChart data={dashboardStats.origem} title="Acervo por Origem" />
+                     <PieChart data={dashboardStats.origem} title="Acervo por Origem" onFilter={(key, val) => setModalFilter({key, value: val, label: key})} />
                    </div>
                    <div className="w-full">
-                     <PieChart data={dashboardStats.decada} title="Acervo por Décadas" />
+                     <PieChart data={dashboardStats.decada} title="Acervo por Décadas" onFilter={(key, val) => setModalFilter({key, value: val, label: 'Década'})} />
                    </div>
                  </div>
 
                  <div className="grid grid-cols-1 gap-6">
                    <div className="w-full">
-                     <BarChart data={dashboardStats.mesAno} title="Acervo Mês a Mês" color="#c2185b" />
+                     <BarChart data={dashboardStats.mesAno} title="Acervo Mês a Mês" color="#c2185b" onFilter={(key, val) => setModalFilter({key, value: val, label: 'Data'})} />
                    </div>
                    <div className="w-full">
-                     <BarChart data={dashboardStats.ano} title="Acervo Ano a Ano" color="#ffb300" />
+                     <BarChart data={dashboardStats.ano} title="Acervo Ano a Ano" color="#ffb300" onFilter={(key, val) => setModalFilter({key, value: val, label: 'Ano'})} />
                    </div>
                  </div>
 
                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                    <div className="w-full lg:col-span-1">
-                     <PieChart data={dashboardStats.codigo} title="Códigos Analisados" />
+                     <PieChart data={dashboardStats.codigo} title="Códigos Analisados" onFilter={(key, val) => setModalFilter({key: 'Código de Classificação', value: val, label: 'Código'})} />
                    </div>
                    <div className="w-full lg:col-span-2">
-                     <BarChart data={dashboardStats.codigo} title="Volume por Código de Classificação" color="#00bcd4" />
+                     <BarChart data={dashboardStats.codigo} title="Volume por Código de Classificação" color="#00bcd4" onFilter={(key, val) => setModalFilter({key: 'Código de Classificação', value: val, label: 'Código'})} />
                    </div>
                  </div>
 
