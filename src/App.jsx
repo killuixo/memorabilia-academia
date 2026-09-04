@@ -84,7 +84,7 @@ const toTitleCase = (str) => {
 // ==========================================
 const parseExtractedText = (rawText) => {
   let parsed = { 
-    centro: '', origem: '', escopoConteudo: '', orientador: '', produtor: '', estudante2: '', estudante3: '', 
+    centro: '', origem: '', escopoConteudo: '', pontoAcesso3: '', produtor: '', pontoAcesso1: '', pontoAcesso2: '', 
     dataDocumento: '', tipoDocumental: '', serie: '', codigo: '', observacoes: ''
   };
   
@@ -178,15 +178,15 @@ const parseExtractedText = (rawText) => {
           }
       }
       if (students[0]) parsed.produtor = students[0];
-      if (students[1]) parsed.estudante2 = students[1];
-      if (students[2]) parsed.estudante3 = students[2];
+      if (students[1]) parsed.pontoAcesso1 = students[1];
+      if (students[2]) parsed.pontoAcesso2 = students[2];
   }
 
   // 4. Orientador(a) / Professora
   let profLine = rawLines.find(l => /(?:Prof|Professor|Orientador)/i.test(l));
   if (profLine) {
       let profText = profLine.replace(/^(.*?(?:Prof[a-zªº.]*|Professor[a]?|Orientador[a]?)[.:\s]*)/i, '').replace(/^(?:Mst|Dra?|MSc|Esp)\b[.:\s]*/i, '');
-      parsed.orientador = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
+      parsed.pontoAcesso3 = toTitleCase(profText.replace(/[^a-zA-ZÀ-ÿ\s]/g, '').trim());
   }
 
   // 5. Escopo e Conteúdo (Assunto / Disciplina)
@@ -406,7 +406,7 @@ export default function App() {
 
   const initialFormState = {
     pacote: '', idItem: '', centro: '', origem: '',
-    produtor: '', estudante2: '', estudante3: '', orientador: '',
+    produtor: '', pontoAcesso1: '', pontoAcesso2: '', pontoAcesso3: '',
     escopoConteudo: '', dataDocumento: '', codigo: '', tipoDocumental: '', serie: '', observacoes: ''
   };
 
@@ -466,12 +466,18 @@ export default function App() {
 
   const uniqueOrigens = [...new Set(items.map(i => i["Origem"]).filter(Boolean))];
   const uniqueEscopos = [...new Set(items.map(i => i["Escopo e Conteúdo"]).filter(Boolean))];
-  const uniqueOrientadores = [...new Set(items.map(i => i["Orientador"]).filter(Boolean))];
-  const uniqueProdutores = [...new Set([
-      ...items.map(i => i["Produtor"]),
+  
+  // Agrupa todos os pontos de acesso (incluindo nomes de colunas antigas para não perder o autocomplete do histórico)
+  const uniquePontosAcesso = [...new Set([
+      ...items.map(i => i["Ponto de Acesso 1"]),
+      ...items.map(i => i["Ponto de Acesso 2"]),
+      ...items.map(i => i["Ponto de Acesso 3"]),
+      ...items.map(i => i["Orientador"]), 
       ...items.map(i => i["Estudante 2"]),
       ...items.map(i => i["Estudante 3"])
   ].filter(Boolean))];
+  
+  const uniqueProdutores = [...new Set(items.map(i => i["Produtor"]).filter(Boolean))];
   const uniqueSeries = [...new Set(items.map(i => i["Série"]).filter(Boolean))];
   const uniqueTipos = [...new Set(items.map(i => i["Tipo Documental"]).filter(Boolean))];
   const uniqueCodigos = [...new Set(items.map(i => i["Código de Classificação"]).filter(Boolean))];
@@ -510,11 +516,11 @@ export default function App() {
         centro: parsedData.centro || prev.centro,
         origem: parsedData.origem || prev.origem,
         escopoConteudo: parsedData.escopoConteudo || prev.escopoConteudo,
-        orientador: parsedData.orientador || prev.orientador,
+        pontoAcesso3: parsedData.pontoAcesso3 || prev.pontoAcesso3,
         dataDocumento: parsedData.dataDocumento || prev.dataDocumento,
         produtor: parsedData.produtor || prev.produtor,
-        estudante2: parsedData.estudante2 || prev.estudante2,
-        estudante3: parsedData.estudante3 || prev.estudante3,
+        pontoAcesso1: parsedData.pontoAcesso1 || prev.pontoAcesso1,
+        pontoAcesso2: parsedData.pontoAcesso2 || prev.pontoAcesso2,
         codigo: parsedData.codigo || prev.codigo,
         tipoDocumental: parsedData.tipoDocumental || prev.tipoDocumental,
         serie: parsedData.serie || prev.serie,
@@ -712,8 +718,8 @@ export default function App() {
               {uniqueEscopos.map((esc, idx) => <option key={`esc-${idx}`} value={esc} />)}
             </datalist>
             
-            <datalist id="listaOrientadores">
-              {uniqueOrientadores.map((ori, idx) => <option key={`orien-${idx}`} value={ori} />)}
+            <datalist id="listaPontosAcesso">
+              {uniquePontosAcesso.map((pa, idx) => <option key={`pa-${idx}`} value={pa} />)}
             </datalist>
 
             <datalist id="listaProdutores">
@@ -756,7 +762,7 @@ export default function App() {
                     <div className="p-3 border-[3px] border-black bg-[#ffe082]"><strong className="text-black uppercase">Origem:</strong> <br/>{formData.origem || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Escopo e Conteúdo:</strong> <br/>{formData.escopoConteudo || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-white"><strong className="text-black uppercase">Produtor / Requerente / Estudante Principal:</strong> <br/>{formData.produtor || '-'}</div>
-                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-gray-500 uppercase">Pontos de Acesso Secundários:</strong> <br/>{[formData.orientador, formData.estudante2, formData.estudante3].filter(Boolean).join(' | ') || '-'}</div>
+                    <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-gray-100"><strong className="text-gray-500 uppercase">Pontos de Acesso Secundários:</strong> <br/>{[formData.pontoAcesso1, formData.pontoAcesso2, formData.pontoAcesso3].filter(Boolean).join(' | ') || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Data do Documento:</strong> <br/>{formData.dataDocumento || '-'}</div>
                     <div className="p-3 border-[3px] border-black bg-[#f8bbd0]"><strong className="text-black uppercase">Tipo Documental:</strong> <br/>{formData.tipoDocumental || '-'}</div>
                     <div className="col-span-1 md:col-span-2 p-3 border-[3px] border-black bg-[#e0f7fa]"><strong className="text-black uppercase">Série:</strong> <br/>{formData.serie || '-'}</div>
@@ -805,21 +811,21 @@ export default function App() {
 
                   <details className="w-full border-[3px] border-black bg-white group cursor-pointer mt-2">
                     <summary className="font-black text-black uppercase tracking-wide text-[10px] md:text-xs p-3 md:p-4 bg-gray-100 group-open:border-b-[3px] border-black hover:bg-gray-200 transition-colors">
-                      ▶ Pontos de Acesso Adicionais (Orientador, Coautores...)
+                      ▶ Pontos de Acesso Adicionais (Coautores, Orientadores...)
                     </summary>
                     <div className="p-4 md:p-6 flex flex-col gap-4 bg-white cursor-default">
                       <div className="flex flex-col gap-2">
-                        <label className="font-black text-black uppercase tracking-wide text-xs text-gray-700">Orientador(a) / Professor(a)</label>
-                        <input type="text" list="listaOrientadores" name="orientador" value={formData.orientador} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-pink-50" />
+                        <label className="font-black text-black uppercase tracking-wide text-xs text-gray-700">Ponto de Acesso 3 (Ex: Orientador(a))</label>
+                        <input type="text" list="listaPontosAcesso" name="pontoAcesso3" value={formData.pontoAcesso3} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-pink-50" />
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="flex flex-col gap-2">
-                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Estudante 2</label>
-                          <input type="text" list="listaProdutores" name="estudante2" value={formData.estudante2} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
+                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Ponto de Acesso 1</label>
+                          <input type="text" list="listaPontosAcesso" name="pontoAcesso1" value={formData.pontoAcesso1} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
                         </div>
                         <div className="flex flex-col gap-2">
-                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Estudante 3</label>
-                          <input type="text" list="listaProdutores" name="estudante3" value={formData.estudante3} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
+                          <label className="font-black text-black uppercase tracking-wide text-[10px] text-gray-500">Ponto de Acesso 2</label>
+                          <input type="text" list="listaPontosAcesso" name="pontoAcesso2" value={formData.pontoAcesso2} onChange={handleChange} className="w-full border-[2px] border-black p-2 text-sm font-bold focus:outline-none focus:bg-gray-50" />
                         </div>
                       </div>
                     </div>
